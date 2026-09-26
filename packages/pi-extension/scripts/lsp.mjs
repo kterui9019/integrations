@@ -329,6 +329,22 @@ const files = () => ({
   console.log('✓ servers shut down after the idle period and respawn on the next call')
 }
 
+// Idle timer with concurrent calls: an older deadline must not survive a later call
+{
+  const sb = new FakeSandbox(files())
+  const manager = new LspManager(150)
+  const hover = () => runLspAction(manager, { sandbox: sb, cwd: CWD }, { action: 'hover', path: 'src/main.ts', line: 1, symbol: 'import' })
+  await hover()
+  await Promise.all([hover(), hover()])
+  await new Promise((r) => setTimeout(r, 100))
+  await hover()
+  await new Promise((r) => setTimeout(r, 90))
+  assert.equal(sb.ptys.size, 1, 'the deadline set by the concurrent pair was replaced by the later call')
+  await new Promise((r) => setTimeout(r, 120))
+  assert.equal(sb.ptys.size, 0)
+  console.log('✓ idle period starts after the last concurrent call and restarts on reuse')
+}
+
 // Transport: a dropped connection ends the stream and rejects writes
 {
   const sb = new FakeSandbox()

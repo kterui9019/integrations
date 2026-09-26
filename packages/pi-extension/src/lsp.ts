@@ -308,11 +308,16 @@ export class LspManager {
   private readonly starting = new Map<LspLanguage, Promise<Server>>()
   private orphansReaped = false
   private idleTimer: NodeJS.Timeout | undefined
+  private activeCalls = 0
 
   constructor(private readonly idleShutdownMs = IDLE_SHUTDOWN_MS) {}
 
-  /** Run `fn` exclusively against a live server, respawning once if the old one is gone. */
+  /**
+   * Run `fn` exclusively against a live server, respawning once if the old one is gone.
+   * `fn` must be safe to run twice (read-only, or idempotent document sync).
+   */
   async use<T>(sandbox: Sandbox, root: string, language: LspLanguage, fn: (server: Server) => Promise<T>): Promise<T> {
+    this.activeCalls++
     clearTimeout(this.idleTimer)
     try {
       let server = await this.ensure(sandbox, root, language)
@@ -325,8 +330,12 @@ export class LspManager {
         return await server.exclusive(() => fn(server))
       }
     } finally {
-      this.idleTimer = setTimeout(() => void this.dispose(), this.idleShutdownMs)
-      this.idleTimer.unref()
+      // The idle period starts when the last concurrent call finishes.
+      if (--this.activeCalls === 0) {
+        clearTimeout(this.idleTimer)
+        this.idleTimer = setTimeout(() => void this.dispose(), this.idleShutdownMs)
+        this.idleTimer.unref()
+      }
     }
   }
 
