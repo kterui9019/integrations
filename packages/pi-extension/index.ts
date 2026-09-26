@@ -71,6 +71,10 @@ export default function (pi: ExtensionAPI) {
   pi.registerFlag('public', { description: 'Create a public sandbox (preview URLs need no token)', type: 'boolean' })
   pi.registerFlag('idle-stop', { description: 'Minutes idle before the sandbox pauses (default 15)', type: 'string' })
   pi.registerFlag('no-sync', { description: 'Disable GitHub branch sync (no session branch, no push)', type: 'boolean' })
+  pi.registerFlag('secrets', {
+    description: 'Mount Daytona organization Secrets as env vars: ENV_VAR=secret-name[,ENV_VAR=secret-name…]',
+    type: 'string',
+  })
 
   // Resolved lazily on session_start (CLI flags are not available at load time).
   let active: ActiveSandbox | null = null
@@ -269,12 +273,14 @@ export default function (pi: ExtensionAPI) {
 
       const snapshot = stringFlag(pi.getFlag('snapshot'))
       const isPublic = pi.getFlag('public') === true
+      const secrets = secretsFlag(pi.getFlag('secrets'))
 
       const sandbox = await dt.create({
         // Full session id for a globally-unique sandbox name (branches stay short).
         name: `pi-${sessionId}`,
         snapshot,
         public: isPublic,
+        secrets,
         // Idle PAUSES the sandbox (filesystem preserved); the next tool call
         // transparently restarts it (see withRecovery). Auto-delete is disabled —
         // the sandbox is reaped only when its session is deleted (see reapOrphans).
@@ -542,6 +548,26 @@ function numberFlag(value: boolean | string | undefined): number | undefined {
   // like `0.5` must NOT collapse to `0` (which would read as "disable autostop").
   const floored = Math.floor(n)
   return floored >= 1 ? floored : undefined
+}
+
+/**
+ * Parse `--secrets` (`ENV_VAR=secret-name,…`) into the SDK's env-var → Secret-name
+ * map. Throws on a malformed entry so a typo fails the start instead of silently
+ * creating a sandbox without the credential.
+ */
+function secretsFlag(value: boolean | string | undefined): Record<string, string> | undefined {
+  const raw = stringFlag(value)
+  if (!raw) return undefined
+  const secrets: Record<string, string> = {}
+  for (const entry of raw.split(',')) {
+    if (!entry.trim()) continue
+    const [env, name, ...rest] = entry.split('=').map((s) => s.trim())
+    if (!env || !name || rest.length > 0) {
+      throw new Error(`invalid --secrets entry "${entry}" — expected ENV_VAR=secret-name`)
+    }
+    secrets[env] = name
+  }
+  return Object.keys(secrets).length > 0 ? secrets : undefined
 }
 
 function errorMessage(err: unknown): string {
