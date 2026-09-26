@@ -112,10 +112,15 @@ export function createReadOps(sandbox: Sandbox): ReadOperations {
   }
 }
 
-export function createWriteOps(sandbox: Sandbox): WriteOperations {
+/** Called after a write/edit tool stored `content` at `path` in the sandbox. */
+export type OnFileWritten = (path: string, content: string) => void
+
+export function createWriteOps(sandbox: Sandbox, onWrite?: OnFileWritten): WriteOperations {
   return {
-    writeFile: (path, content) =>
-      withRecovery(sandbox, () => sandbox.fs.uploadFile(Buffer.from(content, 'utf8'), path)),
+    writeFile: async (path, content) => {
+      await withRecovery(sandbox, () => sandbox.fs.uploadFile(Buffer.from(content, 'utf8'), path))
+      onWrite?.(path, content)
+    },
     // `mkdir -p` is idempotent; fs.createFolder errors if the folder exists.
     mkdir: async (dir) => {
       const { exitCode } = await run(sandbox, `mkdir -p ${shellQuote(dir)}`)
@@ -124,14 +129,16 @@ export function createWriteOps(sandbox: Sandbox): WriteOperations {
   }
 }
 
-export function createEditOps(sandbox: Sandbox): EditOperations {
+export function createEditOps(sandbox: Sandbox, onWrite?: OnFileWritten): EditOperations {
   // Pi's edit tool reads the file, applies exact oldText->newText edits
   // in-process, then writes it back — preserving its uniqueness checks.
   // This is the download -> modify -> upload strategy.
   return {
     readFile: (path) => withRecovery(sandbox, () => sandbox.fs.downloadFile(path)),
-    writeFile: (path, content) =>
-      withRecovery(sandbox, () => sandbox.fs.uploadFile(Buffer.from(content, 'utf8'), path)),
+    writeFile: async (path, content) => {
+      await withRecovery(sandbox, () => sandbox.fs.uploadFile(Buffer.from(content, 'utf8'), path))
+      onWrite?.(path, content)
+    },
     access: async (path) => {
       const { exitCode } = await run(sandbox, `test -r ${shellQuote(path)} && test -w ${shellQuote(path)}`)
       if (exitCode !== 0) throw new Error(`File not readable/writable: ${path}`)

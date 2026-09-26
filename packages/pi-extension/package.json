@@ -35,10 +35,12 @@
     "smoke": "node scripts/smoke.mjs",
     "test:no-sync": "node scripts/no-sync.mjs",
     "test:secrets": "node scripts/secrets.mjs",
-    "check": "npm run typecheck && npm run smoke && npm run test:no-sync && npm run test:secrets",
+    "test:lsp": "node scripts/lsp.mjs",
+    "check": "npm run typecheck && npm run smoke && npm run test:no-sync && npm run test:secrets && npm run test:lsp",
     "test:bash-bg": "node scripts/bash-bg.mjs",
     "test:recovery": "node scripts/recovery.mjs",
-    "test:live": "npm run test:bash-bg && npm run test:recovery"
+    "test:lsp-live": "node scripts/lsp-live.mjs",
+    "test:live": "npm run test:bash-bg && npm run test:recovery && npm run test:lsp-live"
   },
   "dependencies": {
     "@daytona/sdk": "^0.192.0"

@@ -135,18 +135,18 @@ Pi（ローカル）から、Daytona sandbox 内の checkout・依存関係に�
 - PTY は、そのままでは stdio として安全ではない（B の懸念はその通り）。しかし `stty raw -echo`・sentinel・stderr のリダイレクト・64 KiB 分割と write の直列化・パイプで包む、の 5 点で、今回の検証範囲ではバイト単位で一致し、LSP の全フロー（push 通知、didChange、definition / references / hover）が動いた。
 - 残る制約: stderr をストリームとして読めない。stdin の EOF は、パイプで包んで feeder を kill する回避策でしか送れない。1 往復に約 180〜200 ms（Daytona までのネットワーク往復が支配的）。
 
-### 提案する構成
+### 構成（§4 で実装済み）
 
 ```text
 Pi extension
 ├── src/remote-process.ts   RemoteProcess（PTY 実装。LSP を知らない）
-│     spawn(command, { cwd, env }) → { write, stdout, kill, wait, isConnected }
-│     raw 化・sentinel・stderr のリダイレクト・64 KiB 分割と write の直列化・ID プレフィックス・回収
+│     spawnRemoteProcess(sandbox, command, { id, cwd, env }) → { write, stdout, kill, isConnected }
+│     raw 化・sentinel・stderr のリダイレクト・64 KiB 分割と write の直列化・ID プレフィックスでの回収
 ├── src/lsp-client.ts       JSON-RPC の frame 処理・request・通知の購読（transport を知らない）
-└── src/lsp.ts              ドキュメントの version 管理・復旧・lsp ツール（definition / references / hover / diagnostics）
+└── src/lsp.ts              ドキュメント同期・diagnostics・復旧・lsp ツール
 ```
 
-最初から `stderr: AsyncIterable` まで揃えた interface にはしない。PTY 実装では stderr を提供できないので、実装できるもの（`write` / `stdout` / `kill` / `wait` / `isConnected`）だけを持たせる。
+interface は、PTY 実装で提供でき、かつ使うものだけにした（`write` / `stdout` / `kill` / `isConnected`）。`stderr` はストリームで提供できず、`wait()` は sandbox 停止時に解決しないので持たせていない。
 
 ### Daytona upstream への feature request（C の観点。PTY の回避策を不要にする最小 API）
 
@@ -160,8 +160,24 @@ session API に「raw（パイプ）モード」を足すだけで、PTY の回�
 | stdin の close（EOF） | なし | `closeInput(sessionId, commandId)` |
 | kill / 終了コード | `deleteSession` / exitCode ファイル | 変更なし（1 command 単位の kill があるとよりよい） |
 
-### 次の一手
+## 4. 本実装（`lsp` ツール）
 
-1. `src/remote-process.ts`（PTY 実装）と `src/lsp-client.ts` を本実装として入れる。既存ツールには手を入れない。
-2. その上に definition / references / hover / diagnostics を返す `lsp` ツールを作る（編集は既存の edit ツールのままにし、LSP 側はツールの呼び出しごとに `didChange` で同期する）。
-3. Daytona に session API の raw モードを提案する。採用されたら `remote-process.ts` の実装だけを差し替える。
+`--daytona` セッションでのみ登録される。actions: definition / references / hover / rename（ファイルを編集する）/ diagnostics / document_symbols / workspace_symbols / status。位置は 1-based の `line` と、その行にある `symbol` 名で指定する（列を数えなくてよい）。テスト: `npm run test:lsp`（オフライン、fake PTY + fake language server）、`npm run test:lsp-live`（実 sandbox）。
+
+| 決めたこと | 理由（実測） |
+|---|---|
+| 初回の呼び出しで spawn し、以後は使い回す | TypeScript は初回が約 4 秒（spawn + initialize + project ロード）、2 回目以降は約 0.2〜0.6 秒 |
+| tsls に `initializationOptions.tsserver.useSyntaxServer: 'never'` を渡す | 構文専用 tsserver が project のロード中に応答し、definition が宣言ではなく import のバインディングを返した（約 3 秒後には正しくなる）。全 request を semantic server に回せば初回から正しい |
+| TypeScript の diagnostics は `workspace/executeCommand` の `typescript.tsserverRequest`（`syntacticDiagnosticsSync` + `semanticDiagnosticsSync`）で pull する | tsls は pull diagnostics を持たず、push 通知には `version` が付かない。user.ts と main.ts を続けて変更すると、main.ts の変更前に計算された push が変更後に届き、古い結果を最新と誤認した（rename 後に TS2339 が残った）。tsserver の request は順序通りに処理されるので、直前の `didChange` を必ず反映する |
+| Python（pylsp）の diagnostics は push を使い、`version` で新旧を判定する | pylsp は変更したドキュメントだけに `version` 付きで push する。デフォルト snapshot の pylsp には lint plugin がない（jedi のみ）ので、diagnostics には `pyflakes` などの追加が必要 |
+| edit / write ツールの書き込みは、その場でサーバーに送る（`fileWritten`）。open 中のファイルは、各呼び出しの前に `md5sum` 1 回で sandbox と照合する | edit 直後の diagnostics（ファイルをまたぐものも含む）が即座に正しくなる。bash で変えたファイル（`sed`・`git checkout`・フォーマッタ）も次の呼び出しで反映される。一度も開いていないファイルは、サーバー自身のファイル監視（約 2 秒）に任せる |
+| 同期と request は 1 サーバーにつき直列に実行する | 並行したツール呼び出しで、didOpen の二重送信や version の逆転を起こさない |
+| 復旧は 1 回だけ: `isConnected()` が false、または接続が閉じていたら再 spawn する（sandbox が止まっていれば `withRecovery` で起動する） | idle による一時停止（デフォルト 15 分）は日常的に起きる。再 spawn 後は、次の呼び出しで必要なファイルを開き直すだけで足りる |
+| 最初の spawn の前に、`pi-lsp-` で始まる PTY を kill する。`session_shutdown` でも kill する | Pi が異常終了すると、サーバーは sandbox 内で動き続ける（§2.3）。sandbox は session ごとなので、残っているものは前回の Pi のもの |
+| バイナリの有無を `command -v` で先に確認し、なければインストール方法を返す。初期化に失敗したら stderr ログの末尾を添える | `exec` の失敗は stderr のリダイレクト先に消え、initialize のタイムアウトとしか見えなくなる |
+| `lsp` の呼び出しが 5 分なかったら、サーバーを停止する | PTY の WebSocket がつながっている間、sandbox は idle で一時停止しない。autoStop 1 分での実測: PTY 接続あり → 240 秒後も `started`、PTY なし（対照）→ 約 90 秒で `stopped`、PTY プロセスは残して WebSocket だけ切断 → 約 90 秒で `stopped`。したがって、止まらなくなる原因は接続であり、異常終了した Pi が残したサーバーは一時停止を妨げない |
+
+### 残り
+
+- Daytona に session API の raw モードを提案する（§3）。採用されたら `remote-process.ts` の実装だけを差し替える。
+- diagnostics はサーバーが開いたファイルだけが対象。プロジェクト全体は `tsc --noEmit` などを bash で実行する。
