@@ -381,6 +381,20 @@ const files = () => ({
   dropping.uploadHook = undefined
   assert.equal(await b.lsp({ action: 'definition', path: 'src/main.ts', line: 2, symbol: 'Users' }), 'src/user.ts:1:14  export class Users {}')
   console.log('✓ rename: losing the server mid-write completes the write without re-running the rename')
+
+  const both = new FakeSandbox({ [`${CWD}/src/a.ts`]: 'export class Foo {}\nexport class Bar {}\n' })
+  const c = load(both)
+  await c.emit('session_start')
+  both.uploadHook = async (_path, write) => {
+    await new Promise((r) => setTimeout(r, 50))
+    write()
+  }
+  await Promise.all([
+    c.lsp({ action: 'rename', path: 'src/a.ts', line: 1, symbol: 'Foo', new_name: 'NewFoo' }),
+    c.lsp({ action: 'rename', path: 'src/a.ts', line: 2, symbol: 'Bar', new_name: 'NewBar' }),
+  ])
+  assert.equal(both.files.get(`${CWD}/src/a.ts`), 'export class NewFoo {}\nexport class NewBar {}\n')
+  console.log('✓ rename: concurrent renames of one file both survive (plan and write are serialized)')
 }
 
 // Transport: a dropped connection ends the stream and rejects writes

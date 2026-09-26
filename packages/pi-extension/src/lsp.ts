@@ -309,6 +309,7 @@ export class LspManager {
   private orphansReaped = false
   private idleTimer: NodeJS.Timeout | undefined
   private activeCalls = 0
+  private mutations: Promise<unknown> = Promise.resolve()
 
   constructor(private readonly idleShutdownMs = IDLE_SHUTDOWN_MS) {}
 
@@ -337,6 +338,13 @@ export class LspManager {
         this.idleTimer.unref()
       }
     }
+  }
+
+  /** Serialize operations that read files and then write them back (rename). */
+  mutate<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.mutations.then(fn)
+    this.mutations = run.catch(() => undefined)
+    return run
   }
 
   /** Push content written by the edit/write tools to a running server. Never starts one; never throws. */
@@ -486,16 +494,19 @@ export async function runLspAction(manager: LspManager, target: LspTarget, param
   if (params.action === 'rename') {
     const file = required(path, 'path', params.action)
     const newName = required(params.new_name, 'new_name', params.action)
-    // Planning only reads, so it may be retried on a respawned server; writing may not.
-    const plan = await manager.use(sandbox, cwd, requireLanguage(file), async (server) => {
-      requireCapability(server, params.action)
-      await server.refresh()
-      const doc = server.documents.get(file) ?? (await server.sync(file))
-      const position = resolvePosition(doc.text, params)
-      const edit = await server.client.request<WorkspaceEdit | null>('textDocument/rename', { textDocument: { uri: fileUri(file) }, position, newName })
-      return planWorkspaceEdit(server, edit)
+    // Planning only reads, so it may be retried on a respawned server; writing may not. Plan and
+    // write form one unit: a concurrent rename must plan against this one's result, not before it.
+    return manager.mutate(async () => {
+      const plan = await manager.use(sandbox, cwd, requireLanguage(file), async (server) => {
+        requireCapability(server, params.action)
+        await server.refresh()
+        const doc = server.documents.get(file) ?? (await server.sync(file))
+        const position = resolvePosition(doc.text, params)
+        const edit = await server.client.request<WorkspaceEdit | null>('textDocument/rename', { textDocument: { uri: fileUri(file) }, position, newName })
+        return planWorkspaceEdit(server, edit)
+      })
+      return writeRenamePlan(manager, sandbox, plan, cwd, newName)
     })
-    return writeRenamePlan(manager, sandbox, plan, cwd, newName)
   }
 
   if (params.action === 'diagnostics' && !path) {
