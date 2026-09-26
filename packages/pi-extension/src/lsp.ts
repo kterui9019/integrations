@@ -593,24 +593,26 @@ async function planWorkspaceEdit(server: Server, edit: WorkspaceEdit | null): Pr
   return updates
 }
 
-/** Write every file of the plan; on failure restore the ones already written. Never retried. */
+/** Write every file of the plan; on failure restore every file touched so far. Never retried. */
 async function writeRenamePlan(manager: LspManager, sandbox: Sandbox, plan: FileUpdate[], root: string, newName: string): Promise<string> {
   if (plan.length === 0) return 'Nothing to rename.'
   const upload = (path: string, text: string) => withRecovery(sandbox, () => sandbox.fs.uploadFile(Buffer.from(text, 'utf8'), path))
-  const written: FileUpdate[] = []
+  // A failed upload may still have reached the file (e.g. the response was lost), so the
+  // file being written counts as touched before the upload starts.
+  const touched: FileUpdate[] = []
   for (const update of plan) {
+    touched.push(update)
     try {
       await upload(update.path, update.text)
     } catch (err) {
       const notRestored: string[] = []
-      for (const done of written) await upload(done.path, done.original).catch(() => notRestored.push(relativePath(done.path, root)))
+      for (const done of touched) await upload(done.path, done.original).catch(() => notRestored.push(relativePath(done.path, root)))
       const reason = `${relativePath(update.path, root)}: ${err instanceof Error ? err.message : String(err)}`
       if (notRestored.length > 0) {
-        throw new Error(`Rename to ${newName} failed writing ${reason}. These files keep the new name and could not be restored: ${notRestored.join(', ')}`)
+        throw new Error(`Rename to ${newName} failed writing ${reason}. These files could not be restored and may contain the new name: ${notRestored.join(', ')}`)
       }
-      throw new Error(`Rename to ${newName} failed writing ${reason}. No files were changed${written.length ? ` (${written.length} restored)` : ''}.`)
+      throw new Error(`Rename to ${newName} failed writing ${reason}. No files were changed (${touched.length} restored).`)
     }
-    written.push(update)
   }
   for (const { path, text } of plan) manager.fileWritten(path, text)
   const total = plan.reduce((n, u) => n + u.edits, 0)

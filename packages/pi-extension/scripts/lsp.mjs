@@ -100,9 +100,11 @@ class FakeSandbox {
     this.requests = []
     this.uploadHook = undefined
     this.fs = {
+      // uploadHook(path, write) decides whether and when the content lands.
       uploadFile: async (buf, p) => {
-        this.uploadHook?.(p)
-        this.files.set(p, Buffer.from(buf).toString())
+        const write = () => this.files.set(p, Buffer.from(buf).toString())
+        if (this.uploadHook) return this.uploadHook(p, write)
+        write()
       },
       downloadFile: async (p) => {
         if (!this.files.has(p)) throw new Error('not found')
@@ -354,19 +356,22 @@ const files = () => ({
   const a = load(failing)
   await a.emit('session_start')
   let uploads = 0
-  failing.uploadHook = () => {
-    if (++uploads === 2) throw new Error('disk full')
+  failing.uploadHook = (_path, write) => {
+    write()
+    // The second file is written, but the upload still reports failure (e.g. lost response).
+    if (++uploads === 2) throw new Error('response lost')
   }
-  await assert.rejects(a.lsp(rename), /^Error: Rename to Users failed writing src\/main\.ts: disk full\. No files were changed \(1 restored\)\.$/)
+  await assert.rejects(a.lsp(rename), /^Error: Rename to Users failed writing src\/main\.ts: response lost\. No files were changed \(2 restored\)\.$/)
   assert.deepEqual(Object.fromEntries(failing.files), original)
   assert.equal(failing.requests.filter((m) => m === 'textDocument/rename').length, 1)
-  console.log('✓ rename: a failed write restores the files already written')
+  console.log('✓ rename: a failed write restores every file touched, including the one whose upload failed')
 
   const dropping = new FakeSandbox(files())
   const b = load(dropping)
   await b.emit('session_start')
   uploads = 0
-  dropping.uploadHook = () => {
+  dropping.uploadHook = (_path, write) => {
+    write()
     if (++uploads === 1) for (const pty of [...dropping.ptys.values()]) pty.disconnect()
   }
   assert.equal(await b.lsp(rename), 'Renamed to Users: 3 edit(s) in 2 file(s)\n  src/user.ts (1)\n  src/main.ts (2)')
