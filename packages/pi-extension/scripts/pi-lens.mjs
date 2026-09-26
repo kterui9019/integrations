@@ -35,7 +35,13 @@ function fakeMcpServer(send, sandbox) {
   const calls = {
     pilens_session_start: () => toolText('Session started.', {}),
     pilens_analyze: ({ file }) => {
-      const line = read(file).split('\n').findIndex((l) => l.includes('ERROR'))
+      const source = read(file)
+      if (source.includes('HUGE')) {
+        const cut = toolText(`${file} [warm] — 2 blocking`, { counts: { diagnostics: 2 }, diagnostics: [{ line: 1, message: 'first' }, { line: 2, message: 'second' }] })
+        const text = cut.content[0].text
+        return { content: [{ type: 'text', text: `${text.slice(0, text.indexOf('second') + 6)}\n\nusage bytes=40960 truncated=true` }] }
+      }
+      const line = source.split('\n').findIndex((l) => l.includes('ERROR'))
       const diagnostics = line < 0 ? [] : [{ line: line + 1, column: 1, severity: 'error', rule: 'ts:2322', message: 'bad' }]
       return toolText(`${file} [warm] — ${diagnostics.length} blocking`, { counts: { diagnostics: diagnostics.length }, diagnostics })
     },
@@ -213,11 +219,18 @@ function load(sandbox, { lens = new PiLens(), active = true } = {}) {
   assert.equal(sb.calls.filter((c) => c.name === 'pilens_analyze').length, 2)
   console.log('✓ write/edit results get pi-lens findings appended; clean files and other tools are left alone')
 
+  sb.files.set(`${CWD}/src/big.ts`, 'HUGE\n')
+  const truncated = (await pi.edited('src/big.ts')).content[1].text
+  assert.match(truncated, /^pi-lens: src\/big\.ts \[warm\] — 2 blocking\n/)
+  assert.match(truncated, /"message": "first"[\s\S]*second/)
+  assert.match(truncated, /truncated=true$/)
+  console.log('✓ a result cut off inside its JSON block (40 KiB cap) is appended in full, not reduced to its summary line')
+
   await pi.emit('turn_end')
-  assert.deepEqual(sb.calls.at(-1), { name: 'pilens_turn_end', args: { files: ['src/main.ts'] } })
+  assert.deepEqual(sb.calls.at(-1), { name: 'pilens_turn_end', args: { files: ['src/main.ts', 'src/big.ts'] } })
   assert.deepEqual(pi.messages, [
     {
-      message: { customType: 'pi-lens', content: 'pi-lens turn-end:\nTurn-end over 1 file(s).\ncascade: src/main.ts', display: true },
+      message: { customType: 'pi-lens', content: 'pi-lens turn-end:\nTurn-end over 2 file(s).\ncascade: src/main.ts', display: true },
       options: { deliverAs: 'steer' },
     },
   ])

@@ -334,7 +334,8 @@ export function analyzeReport(result: McpToolResult): string | undefined {
   const text = resultText(result)
   if (result.isError) throw new Error(text)
   const data = jsonBlock<AnalyzeData>(text)
-  if (!data) return `pi-lens: ${prose(text)}`
+  // pi-lens caps results at 40 KiB, which can cut the JSON block; the text is all there is.
+  if (!data) return `pi-lens: ${text}`
   if (!data.counts?.diagnostics) return undefined
   const lines = (data.diagnostics ?? []).map((d) => `  ${d.line}:${d.column} ${d.severity} ${d.rule}: ${d.message}`)
   return [`pi-lens: ${prose(text).split('\n')[0]}`, ...lines].join('\n')
