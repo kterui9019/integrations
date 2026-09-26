@@ -345,6 +345,39 @@ const files = () => ({
   console.log('✓ idle period starts after the last concurrent call and restarts on reuse')
 }
 
+// Rename: writing is never retried; a failed write is rolled back
+{
+  const rename = { action: 'rename', path: 'src/user.ts', line: 1, symbol: 'UserRepository', new_name: 'Users' }
+  const original = files()
+
+  const failing = new FakeSandbox(files())
+  const a = load(failing)
+  await a.emit('session_start')
+  let uploads = 0
+  failing.uploadHook = () => {
+    if (++uploads === 2) throw new Error('disk full')
+  }
+  await assert.rejects(a.lsp(rename), /^Error: Rename to Users failed writing src\/main\.ts: disk full\. No files were changed \(1 restored\)\.$/)
+  assert.deepEqual(Object.fromEntries(failing.files), original)
+  assert.equal(failing.requests.filter((m) => m === 'textDocument/rename').length, 1)
+  console.log('✓ rename: a failed write restores the files already written')
+
+  const dropping = new FakeSandbox(files())
+  const b = load(dropping)
+  await b.emit('session_start')
+  uploads = 0
+  dropping.uploadHook = () => {
+    if (++uploads === 1) for (const pty of [...dropping.ptys.values()]) pty.disconnect()
+  }
+  assert.equal(await b.lsp(rename), 'Renamed to Users: 3 edit(s) in 2 file(s)\n  src/user.ts (1)\n  src/main.ts (2)')
+  assert.equal(dropping.files.get(`${CWD}/src/user.ts`), 'export class Users {}\n')
+  assert.equal(dropping.files.get(`${CWD}/src/main.ts`), "import { Users } from './user'\nconst repo = new Users()\n")
+  assert.equal(dropping.requests.filter((m) => m === 'textDocument/rename').length, 1)
+  dropping.uploadHook = undefined
+  assert.equal(await b.lsp({ action: 'definition', path: 'src/main.ts', line: 2, symbol: 'Users' }), 'src/user.ts:1:14  export class Users {}')
+  console.log('✓ rename: losing the server mid-write completes the write without re-running the rename')
+}
+
 // Transport: a dropped connection ends the stream and rejects writes
 {
   const sb = new FakeSandbox()

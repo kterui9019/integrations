@@ -483,6 +483,21 @@ export async function runLspAction(manager: LspManager, target: LspTarget, param
     })
   }
 
+  if (params.action === 'rename') {
+    const file = required(path, 'path', params.action)
+    const newName = required(params.new_name, 'new_name', params.action)
+    // Planning only reads, so it may be retried on a respawned server; writing may not.
+    const plan = await manager.use(sandbox, cwd, requireLanguage(file), async (server) => {
+      requireCapability(server, params.action)
+      await server.refresh()
+      const doc = server.documents.get(file) ?? (await server.sync(file))
+      const position = resolvePosition(doc.text, params)
+      const edit = await server.client.request<WorkspaceEdit | null>('textDocument/rename', { textDocument: { uri: fileUri(file) }, position, newName })
+      return planWorkspaceEdit(server, edit)
+    })
+    return writeRenamePlan(manager, sandbox, plan, cwd, newName)
+  }
+
   if (params.action === 'diagnostics' && !path) {
     const languages = manager.runningLanguages(sandbox)
     if (languages.length === 0) return 'No files have been checked yet. Pass `path` to check a file.'
@@ -533,11 +548,6 @@ export async function runLspAction(manager: LspManager, target: LspTarget, param
         const result = await server.client.request<Hover | null>('textDocument/hover', { textDocument, position })
         return result ? hoverText(result.contents) : 'No hover information.'
       }
-      case 'rename': {
-        const newName = required(params.new_name, 'new_name', params.action)
-        const edit = await server.client.request<WorkspaceEdit | null>('textDocument/rename', { textDocument, position, newName })
-        return applyWorkspaceEdit(server, edit, cwd, newName)
-      }
       default:
         throw new Error(`Unsupported lsp action: ${params.action}`)
     }
@@ -559,28 +569,52 @@ function resolvePosition(text: string, params: LspParams): Position {
   throw new Error(`lsp ${params.action} requires \`symbol\` (a name on the line) or \`character\`.`)
 }
 
-async function applyWorkspaceEdit(server: Server, edit: WorkspaceEdit | null, root: string, newName: string): Promise<string> {
+interface FileUpdate {
+  path: string
+  original: string
+  text: string
+  edits: number
+}
+
+/** Resolve a WorkspaceEdit into the new content of every file, without writing anything. */
+async function planWorkspaceEdit(server: Server, edit: WorkspaceEdit | null): Promise<FileUpdate[]> {
   const perFile = new Map<string, TextEdit[]>()
   for (const [uri, edits] of Object.entries(edit?.changes ?? {})) perFile.set(uri, edits)
   for (const change of edit?.documentChanges ?? []) {
     if (change.kind || !change.textDocument || !change.edits) throw new Error('Rename needs file create/rename/delete operations, which are not supported.')
     perFile.set(change.textDocument.uri, [...(perFile.get(change.textDocument.uri) ?? []), ...change.edits])
   }
-  if (perFile.size === 0) return 'Nothing to rename.'
-  // Read everything first so a failure leaves no file half-renamed.
-  const updates: Array<{ path: string; text: string; count: number }> = []
+  const updates: FileUpdate[] = []
   for (const [uri, edits] of perFile) {
     const path = uriToPath(uri)
     const original = server.documents.get(path)?.text ?? (await server.download(path)).toString('utf8')
-    updates.push({ path, text: applyTextEdits(original, edits), count: edits.length })
+    updates.push({ path, original, text: applyTextEdits(original, edits), edits: edits.length })
   }
-  for (const { path, text } of updates) {
-    const bytes = Buffer.from(text, 'utf8')
-    await server.sandbox.fs.uploadFile(bytes, path)
-    await server.sync(path, bytes)
+  return updates
+}
+
+/** Write every file of the plan; on failure restore the ones already written. Never retried. */
+async function writeRenamePlan(manager: LspManager, sandbox: Sandbox, plan: FileUpdate[], root: string, newName: string): Promise<string> {
+  if (plan.length === 0) return 'Nothing to rename.'
+  const upload = (path: string, text: string) => withRecovery(sandbox, () => sandbox.fs.uploadFile(Buffer.from(text, 'utf8'), path))
+  const written: FileUpdate[] = []
+  for (const update of plan) {
+    try {
+      await upload(update.path, update.text)
+    } catch (err) {
+      const notRestored: string[] = []
+      for (const done of written) await upload(done.path, done.original).catch(() => notRestored.push(relativePath(done.path, root)))
+      const reason = `${relativePath(update.path, root)}: ${err instanceof Error ? err.message : String(err)}`
+      if (notRestored.length > 0) {
+        throw new Error(`Rename to ${newName} failed writing ${reason}. These files keep the new name and could not be restored: ${notRestored.join(', ')}`)
+      }
+      throw new Error(`Rename to ${newName} failed writing ${reason}. No files were changed${written.length ? ` (${written.length} restored)` : ''}.`)
+    }
+    written.push(update)
   }
-  const total = updates.reduce((n, u) => n + u.count, 0)
-  return [`Renamed to ${newName}: ${total} edit(s) in ${updates.length} file(s)`, ...updates.map((u) => `  ${relativePath(u.path, root)} (${u.count})`)].join('\n')
+  for (const { path, text } of plan) manager.fileWritten(path, text)
+  const total = plan.reduce((n, u) => n + u.edits, 0)
+  return [`Renamed to ${newName}: ${total} edit(s) in ${plan.length} file(s)`, ...plan.map((u) => `  ${relativePath(u.path, root)} (${u.edits})`)].join('\n')
 }
 
 function applyTextEdits(text: string, edits: TextEdit[]): string {

@@ -147,7 +147,7 @@ In `--daytona` sessions the agent gets an `lsp` tool backed by language servers 
 | TypeScript/JavaScript | `typescript-language-server`  | yes (uses the project's own `typescript` when installed)                    |
 | Python                | `pylsp`                       | yes, but without lint plugins — `pip install pyflakes` (or `python-lsp-server[all]`) for diagnostics |
 
-Actions: `definition`, `references`, `hover`, `rename` (edits the files), `diagnostics` (one file, or every file checked so far), `document_symbols`, `workspace_symbols`, `status`. Positions are a 1-based `line` plus a `symbol` name on that line, so the agent doesn't have to count columns.
+Actions: `definition`, `references`, `hover`, `rename` (edits the files; if a write fails, the files already written are restored), `diagnostics` (one file, or every file checked so far), `document_symbols`, `workspace_symbols`, `status`. Positions are a 1-based `line` plus a `symbol` name on that line, so the agent doesn't have to count columns.
 
 - A server starts on the first `lsp` call (a few seconds for a TypeScript project) and is reused; later calls take a few hundred milliseconds.
 - Changes made with `edit`/`write` are sent to the server immediately; files the server has open are re-checked before every call, so changes made via `bash` (`git checkout`, codegen, formatters) are picked up too. Files that were never opened are seen through the server's own file watching (about 2 s).
