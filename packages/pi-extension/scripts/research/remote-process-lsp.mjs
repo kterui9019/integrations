@@ -75,6 +75,15 @@ try {
     await proc.kill()
     assert.equal(await proc.wait(), 137)
     console.log('✓ kill() terminates the process (exit 137)')
+
+    // Two concurrent writes larger than one chunk must not interleave (LSP framing depends on it).
+    // `tr -s` squeezes runs, so contiguous order prints "AB" and interleaved chunks print "ABAB…".
+    const squeeze = await spawnPtyProcess(sandbox, `sh -c 'head -c 400000 | tr -s AB'`)
+    await Promise.all([squeeze.write(Buffer.alloc(200000, 0x41)), squeeze.write(Buffer.alloc(200000, 0x42))])
+    let squeezed = ''
+    for await (const chunk of squeeze.stdout) squeezed += Buffer.from(chunk).toString()
+    assert.equal(squeezed, 'AB')
+    console.log('✓ two concurrent 200 KB writes arrive whole and in call order')
   }
 
   // --- 2. typescript-language-server over the same transport ---
