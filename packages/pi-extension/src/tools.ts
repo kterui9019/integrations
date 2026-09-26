@@ -12,7 +12,8 @@
  * - `--daytona` off            -> the extension is dormant, Pi's local tool runs
  *
  * The operation-backed tools (bash/read/write/edit/ls) share one wrapper;
- * find/grep run a dedicated in-sandbox search; preview_url is a custom tool.
+ * find/grep run a dedicated in-sandbox search; preview_url is a custom tool;
+ * pi-lens tools come from the pi-lens server in the sandbox (pi-lens.ts).
  */
 
 import type { Sandbox } from '@daytona/sdk'
@@ -29,6 +30,7 @@ import {
 import { Type } from 'typebox'
 import { type FindParams, runRemoteFind } from './find-tool.ts'
 import { type GrepParams, runRemoteGrep } from './grep-tool.ts'
+import { registerPiLens } from './pi-lens.ts'
 import { createBashOps, createEditOps, createLsOps, createReadOps, createWriteOps } from './ops.ts'
 import { withRecovery } from './sandbox.ts'
 
@@ -155,6 +157,8 @@ export function registerTools(pi: ExtensionAPI, getActive: () => ToolSandbox | n
       return { content: [{ type: 'text', text }], details: undefined }
     },
   })
+
+  registerPiLens(pi, getActive, requireSandbox)
 
   // Route user `!` bash commands to the sandbox. When --daytona is set but no
   // sandbox is available, return an error result so the command is NOT run on the

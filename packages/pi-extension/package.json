@@ -39,7 +39,8 @@
     "check": "npm run typecheck && npm run smoke && npm run test:no-sync && npm run test:secrets && npm run test:pi-lens",
     "test:bash-bg": "node scripts/bash-bg.mjs",
     "test:recovery": "node scripts/recovery.mjs",
-    "test:live": "npm run test:bash-bg && npm run test:recovery"
+    "test:pi-lens-live": "node scripts/pi-lens-live.mjs",
+    "test:live": "npm run test:bash-bg && npm run test:recovery && npm run test:pi-lens-live"
   },
   "dependencies": {
     "@daytona/sdk": "^0.192.0"
