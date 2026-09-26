@@ -139,11 +139,10 @@ Pi（ローカル）から、Daytona sandbox 内の checkout・依存関係に�
 
 ```text
 Pi extension
-├── src/remote-process.ts   RemoteProcess（PTY 実装。LSP を知らない）
+├── src/remote-process.ts   RemoteProcess（PTY 実装。プロトコルを知らない）
 │     spawnRemoteProcess(sandbox, command, { id, cwd, env }) → { write, stdout, kill, isConnected }
 │     raw 化・sentinel・stderr のリダイレクト・64 KiB 分割と write の直列化・ID プレフィックスでの回収
-├── src/lsp-client.ts       JSON-RPC の frame 処理・request・通知の購読（transport を知らない）
-└── src/lsp.ts              ドキュメント同期・diagnostics・復旧・lsp ツール
+└── src/pi-lens.ts          pi-lens-mcp の MCP client（改行区切り JSON-RPC）・ツール登録・write/edit と turn_end のフック
 ```
 
 interface は、PTY 実装で提供でき、かつ使うものだけにした（`write` / `stdout` / `kill` / `isConnected`）。`stderr` はストリームで提供できず、`wait()` は sandbox 停止時に解決しないので持たせていない。
@@ -160,26 +159,45 @@ session API に「raw（パイプ）モード」を足すだけで、PTY の回�
 | stdin の close（EOF） | なし | `closeInput(sessionId, commandId)` |
 | kill / 終了コード | `deleteSession` / exitCode ファイル | 変更なし（1 command 単位の kill があるとよりよい） |
 
-## 4. 本実装（`lsp` ツール）
+## 4. 本実装（sandbox 内の pi-lens）
 
-`--daytona` セッションでのみ登録される。actions: definition / references / hover / rename（ファイルを編集する）/ diagnostics / document_symbols / workspace_symbols / status。位置は 1-based の `line` と、その行にある `symbol` 名で指定する（列を数えなくてよい）。テスト: `npm run test:lsp`（オフライン、fake PTY + fake language server）、`npm run test:lsp-live`（実 sandbox）。
+sandbox 内で pi-lens の MCP サーバー（`pi-lens-mcp`）を PTY トランスポート越しに動かし、Pi につなぐ。LSP・linter・ast-grep などはすべて pi-lens に任せ、拡張は中継だけを持つ。検証: `scripts/research/pi-lens-mcp.mjs`（MCP を直接叩く）、`npm run test:pi-lens`（オフライン、fake PTY + fake MCP サーバー）、`npm run test:pi-lens-live`（実 sandbox で中継のフックを通す）。
 
-| 決めたこと | 理由（実測） |
+### sandbox の要件（pi-lens 4.3.0 での実測）
+
+| 項目 | 実測 |
 |---|---|
-| 初回の呼び出しで spawn し、以後は使い回す | TypeScript は初回が約 4 秒（spawn + initialize + project ロード）、2 回目以降は約 0.2〜0.6 秒 |
-| tsls に `initializationOptions.tsserver.useSyntaxServer: 'never'` を渡す | 構文専用 tsserver が project のロード中に応答し、definition が宣言ではなく import のバインディングを返した（約 3 秒後には正しくなる）。全 request を semantic server に回せば初回から正しい |
-| TypeScript の diagnostics は `workspace/executeCommand` の `typescript.tsserverRequest`（`syntacticDiagnosticsSync` + `semanticDiagnosticsSync`）で pull する | tsls は pull diagnostics を持たず、push 通知には `version` が付かない。user.ts と main.ts を続けて変更すると、main.ts の変更前に計算された push が変更後に届き、古い結果を最新と誤認した（rename 後に TS2339 が残った）。tsserver の request は順序通りに処理されるので、直前の `didChange` を必ず反映する |
-| Python（pylsp）の diagnostics は push を使い、`version` で新旧を判定する | pylsp は変更したドキュメントだけに `version` 付きで push する。デフォルト snapshot の pylsp には lint plugin がない（jedi のみ）ので、diagnostics には `pyflakes` などの追加が必要 |
-| edit / write ツールの書き込みは、その場でサーバーに送る（`fileWritten`）。open 中のファイルは、各呼び出しの前に `md5sum` 1 回で sandbox と照合する | edit 直後の diagnostics（ファイルをまたぐものも含む）が即座に正しくなる。bash で変えたファイル（`sed`・`git checkout`・フォーマッタ）も次の呼び出しで反映される。一度も開いていないファイルは、サーバー自身のファイル監視（約 2 秒）に任せる |
-| 同期と request は 1 サーバーにつき直列に実行する | 並行したツール呼び出しで、didOpen の二重送信や version の逆転を起こさない |
-| 復旧は 1 回だけ: `isConnected()` が false、または接続が閉じていたら再 spawn する（sandbox が止まっていれば `withRecovery` で起動する） | idle による一時停止（デフォルト 15 分）は日常的に起きる。再 spawn 後は、次の呼び出しで必要なファイルを開き直すだけで足りる |
-| 最初の spawn の前に、`pi-lsp-` で始まる PTY を kill する。`session_shutdown` でも kill する | Pi が異常終了すると、サーバーは sandbox 内で動き続ける（§2.3）。sandbox は session ごとなので、残っているものは前回の Pi のもの |
-| バイナリの有無を `command -v` で先に確認し、なければインストール方法を返す。初期化に失敗したら stderr ログの末尾を添える | `exec` の失敗は stderr のリダイレクト先に消え、initialize のタイムアウトとしか見えなくなる |
-| `lsp` の呼び出しが 5 分なかったら、サーバーを停止する（同時に動いている呼び出しがすべて終わってから数える） | PTY の WebSocket がつながっている間、sandbox は idle で一時停止しない。autoStop 1 分での実測: PTY 接続あり → 240 秒後も `started`、PTY なし（対照）→ 約 90 秒で `stopped`、PTY プロセスは残して WebSocket だけ切断 → 約 90 秒で `stopped`。したがって、止まらなくなる原因は接続であり、異常終了した Pi が残したサーバーは一時停止を妨げない |
-| rename は、読み取りだけの計画（rename request と元内容の読み込み）と書き込みに分ける。書き込みは自動リトライしない。途中で失敗したら、失敗した upload 自身も含めて触ったファイルをすべて元に戻し、戻せなかったファイルはエラーに列挙する。計画から書き込みまでは専用のロックで直列化する | 書き込みの途中でサーバーが落ちたときに rename 全体を再実行すると、元の名前がもう無いため失敗し、一部のファイルだけが改名済みのまま残った。upload は失敗しても内容が書き込まれている可能性がある（応答だけ失われた場合）。同じファイルへの rename を並行に実行すると、両方が古い全文から計画し、後の書き込みが先の改名を消した |
+| メモリ | デフォルト snapshot は cgroup の上限が 1 GiB（`memory.max=1073741824`）。`pilens_analyze` の途中で SIGKILL（exit 137、`memory.events` の `oom_kill 1`）。`pilens_session_start` を省いても同じ。`node:24` イメージにメモリ 4 GiB を指定すると動き、`memory.peak` は 2.4〜2.9 GiB |
+| インストール | `npm i -g pi-lens` だけでは peer 依存が入らず、起動時に `Cannot find package '@earendil-works/pi-tui'` で落ちる。`@earendil-works/pi-tui@^0.85.0 @earendil-works/pi-coding-agent typebox` を並べて入れると動く（164 packages、10〜16 秒） |
+| TypeScript | プロジェクトの `node_modules` に `typescript` が無いと、`const n: number = 'oops'` に対して LSP の診断が 0 件（status は succeeded。原因は未特定）。`npm i -D typescript` 後は TS2322 を検出する |
+| 実行時のダウンロード | opengrep と typos-lsp を実行時に `~/.pi-lens/bin` へダウンロードしていた |
+| 常駐 RSS | pi-lens-mcp 341 MB、ast-grep lsp 127 MB、opengrep 92+47 MB、`tsc --lsp` 55 MB、typos-lsp 29 MB |
+
+### 所要時間（4 GiB、TS ファイル 1 つのプロジェクト）
+
+| 操作 | 実測 |
+|---|---|
+| spawn / `initialize` / `tools/list` | 約 1.0 s / 0.36 s / 0.35 s（17 ツール） |
+| `pilens_session_start` | 約 0.2 s（LSP の warm やスキャンはバックグラウンド） |
+| `pilens_analyze` 初回 | 11〜25 s |
+| `pilens_analyze` 2 回目以降 | 2〜6 s（local TS あり）。lsp の status は、検出できた回でも `failed` と表示された（未調査） |
+| `pilens_turn_end` / `pilens_module_report` | 約 0.2 s |
+
+### 決めたこと
+
+| 決めたこと | 理由 |
+|---|---|
+| 最初のプロンプト（`before_agent_start`）で起動し、`tools/list` の結果をそのまま Pi のツールとして登録する | ツールの一覧と schema は pi-lens のバージョンで変わる。Pi は起動後の `registerTool` を同じ session で即座に反映する |
+| `pilens_session_start` / `pilens_turn_end` / `pilens_session_end` はモデルに見せない | 拡張がライフサイクルとして呼ぶ。モデルが呼ぶと pi-lens の session 状態がずれる |
+| write/edit の `tool_result` で `pilens_analyze` を呼び、指摘があるときだけツール結果に付け足す | pi-lens が Pi 上で直接動くときと同じく、編集した直後に指摘が見える。結果の本文は散文 + ```json ブロックで、件数は JSON 側で判定する |
+| `turn_end` で、そのターンに write/edit したファイルを `files` に明示して `pilens_turn_end` を呼び、advisory があれば `sendMessage(..., { deliverAs: 'steer' })` で渡す | `files` なしで呼ぶと `Turn-end over 0 file(s)` と表示され、analyze で自動登録されたファイルが対象になっているかを結果から確認できなかった |
+| ツール呼び出しは自動リトライしない。切れた接続は次の呼び出しで作り直す | `pilens_ast_grep_replace` はファイルを書き換えるので、二重実行を避ける |
+| 最初の spawn の前に、`pi-lens-` で始まる PTY を kill する。`session_shutdown` でも kill する | Pi が異常終了すると、サーバーは sandbox 内で動き続ける（§2.3）。sandbox は session ごとなので、残っているものは前回の Pi のもの |
+| `command -v pi-lens-mcp` で先に確認し、無ければ一度だけ通知して何もしない。初期化に失敗したら stderr ログの末尾を添える | `exec` の失敗は stderr のリダイレクト先に消え、initialize のタイムアウトとしか見えなくなる |
+| 呼び出しが 5 分なかったら、サーバーを停止する（同時に動いている呼び出しがすべて終わってから数える） | PTY の WebSocket がつながっている間、sandbox は idle で一時停止しない。autoStop 1 分での実測: PTY 接続あり → 240 秒後も `started`、PTY なし（対照）→ 約 90 秒で `stopped`、PTY プロセスは残して WebSocket だけ切断 → 約 90 秒で `stopped` |
 | transport は SDK の `PtyHandle.wait()` を使わず、`isConnected()` を監視する（unref したタイマー。切断・kill で止める）。kill では自分側の WebSocket も閉じる | `wait()` は exit code が届くまで 100 ms ごとにタイマーを張り直す。sandbox の停止で接続だけが切れると exit code は来ないので、Node のプロセスが終了しなくなり、stdout も閉じなかった |
 
 ### 残り
 
 - Daytona に session API の raw モードを提案する（§3）。採用されたら `remote-process.ts` の実装だけを差し替える。
-- diagnostics はサーバーが開いたファイルだけが対象。プロジェクト全体は `tsc --noEmit` などを bash で実行する。
+- idle 停止の後は、次の analyze でコールドスタート（11〜25 s）になる。WebSocket だけ切ってプロセスを残し、`connectPty` で再接続すれば避けられる（切断だけなら sandbox は一時停止する、§4 の実測）。

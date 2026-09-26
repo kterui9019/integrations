@@ -136,6 +136,40 @@ Pass `--no-sync` to turn sync off explicitly. The repo is still cloned (over HTT
 | `find`              | Find files by glob inside the sandbox (gitignore-aware, supports path globs)       |
 | `grep`              | Search file contents inside the sandbox                                            |
 | `preview_url(port)` | Get a public preview URL for a port — the agent calls this after starting a server |
+| `pilens_*`          | pi-lens tools (LSP navigation, diagnostics, AST search/replace, …) — see [pi-lens](#pi-lens) |
+
+### pi-lens
+
+If the sandbox has [pi-lens](https://github.com/apmantza/pi-lens) installed, the extension runs its MCP server (`pi-lens-mcp`) **inside the sandbox**, against the same checkout and dependencies as `bash` — never against your local files. Don't also install pi-lens into your local Pi: it would analyze your host checkout instead.
+
+- Its tools (`pilens_lsp_navigation`, `pilens_diagnostics`, `pilens_ast_grep_search`, `pilens_module_report`, …) are registered on the first prompt.
+- Every `write`/`edit` is analyzed (LSP, tree-sitter, ast-grep, linters); findings are appended to the tool result.
+- At the end of each turn that edited files, pi-lens's turn-end checks run and their advisory is passed to the next model call.
+- The server starts on the first prompt (a few seconds) and stops after 5 minutes without a call, since an open PTY connection keeps the sandbox from idle-pausing. The first analysis after a start takes 10–25 s (cold language servers); later ones a few seconds.
+- Without `pi-lens-mcp` in the sandbox, Pi shows one notice and everything else works as usual.
+
+The default snapshot doesn't fit: pi-lens is OOM-killed at its 1 GiB memory limit (it peaked at about 2.5 GiB on a small TypeScript project). Create a snapshot with more memory and pi-lens preinstalled, then pass it with `--snapshot`:
+
+```js
+import { Daytona, Image } from '@daytona/sdk'
+
+await new Daytona().snapshot.create({
+  name: 'pi-lens',
+  image: Image.base('node:24').runCommands(
+    // pi-lens's peer dependencies aren't installed with it, and its server needs them.
+    'npm install -g pi-lens @earendil-works/pi-tui@^0.85.0 @earendil-works/pi-coding-agent typebox',
+  ),
+  resources: { cpu: 2, memory: 4, disk: 10 },
+})
+```
+
+```bash
+pi --daytona --snapshot pi-lens
+```
+
+For TypeScript diagnostics the project needs its own `typescript` in `node_modules` (`npm install` in the sandbox); without it the language server reported no errors.
+
+The server runs over Daytona's PTY API as a raw byte stream (`src/remote-process.ts`); see [docs/lsp-research.md](docs/lsp-research.md) for why and for the measurements.
 
 ## Development
 
@@ -192,8 +226,8 @@ npm run typecheck                 # type-check (tsc --noEmit)
 npm run smoke                     # offline: load the extension and check it registers (no API key/network)
 npm run test:no-sync              # offline: --no-sync lifecycle never writes to GitHub (stubbed SDK and gh)
 npm run test:secrets              # offline: --secrets is parsed and passed to sandbox creation (stubbed SDK)
-npm run test:pi-lens               # offline: PTY transport and sandbox cwd routing against a fake sandbox
-npm run test:live                 # end-to-end against real Daytona (needs DAYTONA_API_KEY)
+npm run test:pi-lens              # offline: pi-lens bridge + PTY transport against a fake sandbox/MCP server
+npm run test:live                 # end-to-end against real Daytona (needs DAYTONA_API_KEY; the pi-lens test uses a 4 GiB sandbox)
 ```
 
 ### Publishing
@@ -212,11 +246,12 @@ packages/pi-extension/
 │   ├── ops.ts          # Daytona-backed bash/read/write/edit/ls operations
 │   ├── find-tool.ts    # In-sandbox find (ripgrep/find)
 │   ├── grep-tool.ts    # In-sandbox grep (ripgrep/grep)
+│   ├── pi-lens.ts      # pi-lens bridge: MCP client, tool registration, per-edit/turn-end hooks
 │   ├── remote-process.ts # Long-lived sandbox process as a byte stream (PTY API)
 │   ├── github.ts       # Host gh control-plane (token + GitHub API)
 │   ├── sync.ts         # Sandbox-side git push (Daytona git API)
 │   └── util.ts         # Small shared helpers
-├── scripts/            # Offline smoke + live integration tests (research/: LSP/transport investigations)
+├── scripts/            # Offline smoke + live integration tests (research/: LSP/transport/pi-lens investigations)
 ├── docs/               # Design notes (lsp-research.md)
 ├── package.json        # Package metadata (includes the "pi" extensions field)
 ├── tsconfig.json       # TypeScript config
