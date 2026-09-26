@@ -35,8 +35,8 @@
     "smoke": "node scripts/smoke.mjs",
     "test:no-sync": "node scripts/no-sync.mjs",
     "test:secrets": "node scripts/secrets.mjs",
-    "test:lsp": "node scripts/lsp.mjs",
-    "check": "npm run typecheck && npm run smoke && npm run test:no-sync && npm run test:secrets && npm run test:lsp",
+    "test:pi-lens": "node scripts/pi-lens.mjs",
+    "check": "npm run typecheck && npm run smoke && npm run test:no-sync && npm run test:secrets && npm run test:pi-lens",
     "test:bash-bg": "node scripts/bash-bg.mjs",
     "test:recovery": "node scripts/recovery.mjs",
     "test:live": "npm run test:bash-bg && npm run test:recovery"

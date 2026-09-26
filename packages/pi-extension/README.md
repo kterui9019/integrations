@@ -192,7 +192,7 @@ npm run typecheck                 # type-check (tsc --noEmit)
 npm run smoke                     # offline: load the extension and check it registers (no API key/network)
 npm run test:no-sync              # offline: --no-sync lifecycle never writes to GitHub (stubbed SDK and gh)
 npm run test:secrets              # offline: --secrets is parsed and passed to sandbox creation (stubbed SDK)
-npm run test:lsp                  # offline: PTY transport and sandbox cwd routing against a fake sandbox
+npm run test:pi-lens               # offline: PTY transport and sandbox cwd routing against a fake sandbox
 npm run test:live                 # end-to-end against real Daytona (needs DAYTONA_API_KEY)
 ```
 
