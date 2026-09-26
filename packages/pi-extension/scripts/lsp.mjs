@@ -95,6 +95,7 @@ class FakeSandbox {
     this.spawned = 0
     this.installed = true
     this.chunks = []
+    this.execCwds = []
     this.fs = {
       uploadFile: async (buf, p) => this.files.set(p, Buffer.from(buf).toString()),
       downloadFile: async (p) => {
@@ -103,7 +104,10 @@ class FakeSandbox {
       },
     }
     this.process = {
-      executeCommand: async (cmd) => this.exec(cmd),
+      executeCommand: async (cmd, cwd) => {
+        this.execCwds.push(cwd)
+        return this.exec(cmd)
+      },
       listPtySessions: async () => [...this.ptys.keys()].map((id) => ({ id })),
       killPtySession: async (id) => this.ptys.get(id)?.kill(),
       createPty: async (opts) => this.createPty(opts),
@@ -289,6 +293,16 @@ const files = () => ({
   await m.emit('session_start')
   await assert.rejects(m.lsp({ action: 'hover', path: 'src/main.ts', line: 1, symbol: 'import' }), /typescript-language-server is not installed in the sandbox\. Install it with: npm install -g/)
   console.log('✓ actionable errors')
+}
+
+// Pi ≥0.8x passes the host working directory as ctx.cwd; sandbox tools must ignore it
+{
+  const sb = new FakeSandbox()
+  const pi = load(sb)
+  const ctx = { cwd: '/Users/me/host-project', hasUI: false, sessionManager: { getSessionId: () => 'session-id', getSessionFile: () => undefined } }
+  await pi.tools.get('bash').execute('id', { command: 'pwd' }, undefined, () => {}, ctx)
+  assert.deepEqual(sb.execCwds, [CWD])
+  console.log('✓ bash runs in the sandbox cwd even when ctx.cwd is the host directory')
 }
 
 // Idle shutdown: a connected PTY keeps the sandbox from idle-pausing

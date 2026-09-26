@@ -76,8 +76,12 @@ export function registerTools(pi: ExtensionAPI, getActive: () => ToolSandbox | n
       ...local,
       execute: (...args: Parameters<T['execute']>) => {
         const active = requireSandbox()
-        const tool = active ? makeRemote(active.cwd, active.sandbox) : local
-        return tool.execute(...args)
+        if (!active) return local.execute(...args)
+        // Pi ≥0.8x resolves the working directory from ctx.cwd (the host path) before the
+        // tool's own cwd; point it at the sandbox. The prototype keeps the rest of ctx intact.
+        const ctx = args[4] as object | undefined
+        if (ctx) (args as unknown[])[4] = Object.create(ctx, { cwd: { value: active.cwd } })
+        return makeRemote(active.cwd, active.sandbox).execute(...args)
       },
     } as T
   }
