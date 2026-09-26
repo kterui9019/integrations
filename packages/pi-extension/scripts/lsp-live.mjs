@@ -69,7 +69,18 @@ try {
   await run('edit', { path: 'src/user.ts', edits: [{ oldText: 'export class UserRepository {}', newText: 'export class UserRepository {}\nexport class AdminRepository {}' }] })
   assert.match(await run('lsp', { action: 'document_symbols', path: 'src/user.ts' }), /class AdminRepository — src\/user\.ts:3:1/)
   assert.match(await run('lsp', { action: 'workspace_symbols', query: 'AdminRepository' }), /AdminRepository/)
-  console.log('✓ edits made with the edit tool are visible to the next query')
+  console.log('✓ edits to the queried/anchor document are visible to the next query')
+
+  // A file that is neither queried nor the anchor is only seen via tsserver's file watcher.
+  await run('write', { path: 'src/other.ts', content: 'export class WatchedLater {}\n' })
+  const t0 = Date.now()
+  let found = ''
+  for (let i = 0; i < 20 && !/WatchedLater/.test(found); i++) {
+    if (i) await new Promise((r) => setTimeout(r, 500))
+    found = await run('lsp', { action: 'workspace_symbols', query: 'WatchedLater' })
+  }
+  assert.match(found, /WatchedLater/)
+  console.log(`✓ new non-anchor file visible to workspace_symbols after ${Date.now() - t0}ms (file watcher)`)
 
   await sandbox.stop()
   assert.match(await run('lsp', { action: 'workspace_symbols', query: 'AdminRepository' }), /AdminRepository/)

@@ -163,8 +163,9 @@ export function registerTools(pi: ExtensionAPI, getActive: () => ToolSandbox | n
       'sandbox, against the same checkout and node_modules as bash/read/edit. Actions: ' +
       '`workspace_symbols` (find declarations by name across the project; `query` required, optional `path` picks ' +
       'which tsconfig project to search), `document_symbols` (outline of `path`), `completions` (at `path` + 1-based ' +
-      '`line`/`character`), `status`. Locations are 1-based `file:line:col`. Always reads files from disk, so results ' +
-      'reflect edits immediately.',
+      '`line`/`character`), `status`. Locations are 1-based `file:line:col`. The queried document is re-read from ' +
+      'disk on every call; other files are picked up by the server\'s file watcher, which can lag a few seconds ' +
+      'behind an edit.',
     promptSnippet: 'Find symbol declarations / file outlines / completions via an in-sandbox language server',
     parameters: Type.Object({
       action: Type.Unsafe<(typeof LSP_ACTIONS)[number]>({ type: 'string', enum: [...LSP_ACTIONS] }),
