@@ -70,6 +70,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerFlag('snapshot', { description: 'Daytona snapshot/base image to use', type: 'string' })
   pi.registerFlag('public', { description: 'Create a public sandbox (preview URLs need no token)', type: 'boolean' })
   pi.registerFlag('idle-stop', { description: 'Minutes idle before the sandbox pauses (default 15)', type: 'string' })
+  pi.registerFlag('no-sync', { description: 'Disable GitHub branch sync (no session branch, no push)', type: 'boolean' })
 
   // Resolved lazily on session_start (CLI flags are not available at load time).
   let active: ActiveSandbox | null = null
@@ -114,7 +115,11 @@ export default function (pi: ExtensionAPI) {
         lines.push(`branch: ${git.branch} → ${git.base}${sync}`)
         lines.push(`github: ${branchUrl(git.slug, git.branch)}`)
       } else {
-        lines.push('github sync: off (launch with --repo and `gh auth login`)')
+        lines.push(
+          pi.getFlag('no-sync') === true
+            ? 'github sync: off (--no-sync)'
+            : 'github sync: off (launch with --repo and `gh auth login`)',
+        )
       }
       ctx.ui.notify(lines.join('\n'), 'info')
     },
@@ -246,11 +251,9 @@ export default function (pi: ExtensionAPI) {
             setStatus(ctx, '☁ daytona · resuming sandbox…')
             const sandbox = await dt.get(prev.sandboxId)
             await ensureStarted(sandbox)
-            active = { sandbox, cwd: prev.cwd, git: prev.git }
-            ctx.ui.notify(
-              `Reattached sandbox · ${shortId(sandbox.id)}${prev.git ? ` · ${prev.git.branch}` : ''}`,
-              'info',
-            )
+            const git = pi.getFlag('no-sync') === true ? undefined : prev.git
+            active = { sandbox, cwd: prev.cwd, git }
+            ctx.ui.notify(`Reattached sandbox · ${shortId(sandbox.id)}${git ? ` · ${git.branch}` : ''}`, 'info')
             setRunningStatus(ctx, sandbox.id, prev.cwd)
             return
           } catch (err) {
@@ -305,6 +308,7 @@ export default function (pi: ExtensionAPI) {
 
       if (repo) {
         cwd = joinPath(home, repoName(repo))
+        const noSync = pi.getFlag('no-sync') === true
         const slug = parseRepoSlug(normalizeRepoUrl(repo))
         const token = slug ? await getGithubToken(pi) : undefined
 
@@ -312,6 +316,7 @@ export default function (pi: ExtensionAPI) {
           // Each session gets its own GitHub branch pi/<short-session-id>. We create
           // the ref on GitHub first (off the base), then clone that branch so
           // the sandbox has an upstream to push back to (see sync.ts).
+          // With --no-sync the base branch is cloned directly and nothing is pushed.
           const branch = `pi/${shortId(sessionId)}`
           let base = stringFlag(pi.getFlag('branch'))
           // A fork branches off the parent session's branch.
@@ -323,20 +328,24 @@ export default function (pi: ExtensionAPI) {
           if (!base) base = await getDefaultBranch(pi, slug)
           if (!base) throw new Error('Could not resolve a base branch on GitHub.')
 
-          const sha = await getBranchSha(pi, slug, base)
-          if (!sha) throw new Error(`Base branch '${base}' not found on GitHub.`)
-          await ensureBranch(pi, slug, branch, sha)
+          if (!noSync) {
+            const sha = await getBranchSha(pi, slug, base)
+            if (!sha) throw new Error(`Base branch '${base}' not found on GitHub.`)
+            await ensureBranch(pi, slug, branch, sha)
+          }
           // Clone over HTTPS with the token regardless of the origin's format
           // (a detected origin may be SSH, which the token can't authenticate).
           const cloneUrl = `https://github.com/${slug.owner}/${slug.repo}.git`
           setStatus(ctx, `☁ daytona · cloning ${slug.owner}/${slug.repo}…`)
-          await sandbox.git.clone(cloneUrl, cwd, branch, undefined, 'x-access-token', token)
-          git = { slug, base, branch }
+          await sandbox.git.clone(cloneUrl, cwd, noSync ? base : branch, undefined, 'x-access-token', token)
+          if (!noSync) git = { slug, base, branch }
         } else {
           // Not a github.com repo, or no gh token: clone read-only, no push.
           setStatus(ctx, `☁ daytona · cloning ${repoName(repo)}…`)
           await sandbox.git.clone(normalizeRepoUrl(repo), cwd, stringFlag(pi.getFlag('branch')) ?? detectedBranch)
-          ctx.ui.notify('Daytona: GitHub sync disabled (needs `gh auth login` and a github.com repo).', 'warning')
+          if (!noSync) {
+            ctx.ui.notify('Daytona: GitHub sync disabled (needs `gh auth login` and a github.com repo).', 'warning')
+          }
         }
       } else {
         // Not in a git repo: throwaway local repo so the agent can still commit
@@ -382,7 +391,10 @@ export default function (pi: ExtensionAPI) {
     let systemPrompt = event.systemPrompt.replace(/Current working directory: .*/g, cwdLine)
     systemPrompt +=
       '\n\nThis project is a git repository inside a Daytona sandbox. After you finish a unit of work, ' +
-      'commit it with git (e.g. `git add -A && git commit -m "..."`). Do not push — pushing is handled automatically.'
+      'commit it with git (e.g. `git add -A && git commit -m "..."`). ' +
+      (active.git
+        ? 'Do not push — pushing is handled automatically.'
+        : 'Do not push — this session is not synced to a remote; commits stay in the sandbox.')
     return { systemPrompt }
   })
 
