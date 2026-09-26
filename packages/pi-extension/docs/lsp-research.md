@@ -60,3 +60,108 @@ Pi（ローカル）から、Daytona sandbox 内の checkout・依存関係に�
 - Pi の resume では `Sandbox` オブジェクトが新しくなる。一方、sandbox が動き続けていれば、sandbox 側の状態は残っている。前のクライアントが開いたままにしたドキュメントなどが残るので、再利用するなら状態を知らない前提で扱う。
 - 停止した sandbox は、既存の `withRecovery` の範囲（状態を確認して `start()`、1 回リトライ）で扱える。LSP 固有の復旧はその内側で 1 回だけ行う。
 - Daytona 側のエラーにはコードがなく、判別はメッセージ文字列頼みになる。
+
+## 2. 汎用リモートプロセストランスポートの feasibility
+
+目的は LSP の実装ではなく、sandbox 内の長寿命プロセスと Pi の間で双方向の stdin/stdout を流せるかの確認。LSP（`typescript-language-server --stdio`）は最初のユースケースとして使う。
+
+- API 比較: `scripts/research/process-apis.mjs`
+- PTY 上のプロセス: `scripts/research/pty-process.mjs`（LSP を知らない）
+- 最小 LSP クライアント: `scripts/research/lsp-client.mjs`（Daytona を知らない。`{ stdout: AsyncIterable<Uint8Array>, write() }` だけに依存）
+- 通しの検証: `scripts/research/remote-process-lsp.mjs`
+
+いずれも `DAYTONA_API_KEY` を設定して `node <script>` で実行する。daemon ソースは §1 と同じ commit `b5a5d9e` の `apps/daemon/pkg/session`・`pkg/toolbox/process/pty` を読んだ。
+
+### 2.1 Daytona のプロセス API
+
+| 要件 | session API（`executeSessionCommand` runAsync + `sendSessionCommandInput` + `getSessionCommandLogs` のストリーム） | PTY API（`createPty` / `connectPty`） |
+|---|---|---|
+| 長寿命プロセス | ○ | ○（対話ログインシェルを起動し、そこから `exec`） |
+| stdin を後から書く | △ 1 回の書き込みごとに HTTP POST。**末尾に `\n` を強制付加**（`"a"` → `61 0a`）。`suppressInputEcho` を付けないと入力が stdout に混ざる | ○ WebSocket。`stty raw -echo` 後はバイト列がそのまま届く。**1 メッセージ 256 KiB でコネクションが落ちる**（64 KiB は届く）ので分割が必要 |
+| stdout のリアルタイム stream | ✕ daemon がシェルの `while read -r line` で 1 行ずつラベルを付けるため**行単位でバッファされる**（`printf abc; sleep 3` の `abc` は改行が来るまで 3 秒届かない）。SDK は UTF-8 文字列にデコードして渡す | ○ 32 KiB 単位の生バイト（binary frame）。echo の往復は約 180 ms |
+| stderr の分離 | ○ 別ストリーム | ✕ PTY なので stdout と同じストリームになる。ファイルへリダイレクトするしかない |
+| プロセス ID | session ID + command ID | PTY session ID（`listPtySessions` で列挙できる） |
+| kill | `deleteSession`（プロセスグループごと SIGTERM→SIGKILL） | `kill()`（プロセスツリーに SIGKILL、exit 137） |
+| 終了コード | ○ | ○ `wait()`（例: `exit 7` → 7） |
+| stdin の EOF | 送れない（daemon が stdin の保持プロセスを別に立てている） | 送れない（raw モードでは ^D もただのバイト）[INFERENCE: 未検証] |
+| sandbox 再起動後 | session は消える（`session not found`） | PTY は消える（`listPtySessions` が空）。ハンドルはすぐ `isConnected() === false` になる。一方 `wait()` は 5 秒待っても解決しなかった |
+
+補足: session API の streaming で、2 回目の書き込み（`"b"`）の出力が 2.5 秒以内に届かなかったことが 1 回あった（再現は未確認）。
+
+**session API は byte stream として使えない。** 出力が行単位でバッファされるため、改行で終わらない LSP のメッセージ本文は、次の出力が来るまで届かない（応答待ちでデッドロックする）。さらに入力には `\n` が付加される。
+
+### 2.2 PTY を stdio として使うときの問題と、その対処（すべて実測）
+
+| PTY 固有の問題 | 対処 | 結果 |
+|---|---|---|
+| echo、行規律（canonical mode）、CR/LF 変換、シグナル文字（^C） | `stty raw -echo` を実行してから `exec` | 改行なし・`\r\n`・`\x03`・UTF-8・1 MB の往復がすべてバイト単位で一致 |
+| raw 化する前のプロンプトや、打ったコマンドのエコーが出力に混ざる | sentinel より前の出力を捨てる。sentinel は 2 つに分けて `printf` する（コマンド行のエコーに sentinel がそのまま現れて誤検出した） | sentinel 以降はプロセスの出力だけになる |
+| raw 化する前に書いた入力は、エコーされたり行規律で加工されたりする | sentinel を受信するまで書かない | — |
+| stderr が混ざる | `2>ファイル` へリダイレクト | stdout は汚れない。stderr はストリームとしては読めない |
+| 子プロセスから見て stdin/stdout が TTY になる（色付けやページャなど、TTY かどうかで挙動を変える CLI がある） | `cat \| cmd \| cat` で包む | 子からはパイプに見え、往復遅延（約 170 ms）もバッファリングも変わらない |
+| 大きな書き込みでコネクションが落ちる | 64 KiB 単位に分割して送る | 4 MiB を約 1.8 秒で送れる |
+| 切断の検知 | `wait()` ではなく `isConnected()` と request のタイムアウトで判定する | sandbox の stop 直後に `isConnected() === false` |
+
+### 2.3 LSP での検証（`remote-process-lsp.mjs`、すべて成功）
+
+| 検証 | 結果 |
+|---|---|
+| `initialize` / `initialized` | 23 個の capability（definition / references / hover / rename など）。往復約 200 ms |
+| `textDocument/didOpen` → `publishDiagnostics`（server → client の通知） | main.ts の TS2322 を受信 |
+| `textDocument/definition` | main.ts の `UserRepository` → user.ts の宣言（約 200 ms） |
+| `textDocument/references` | 宣言と呼び出しの 2 か所 |
+| `textDocument/hover` | `const repo: UserRepository` |
+| 既存の Daytona `edit` ツールで user.ts を編集 → `didChange` なし | server は古い open バッファのまま（client が所有するドキュメントなので、LSP として正しい挙動） |
+| `didChange`（全文、version 2） | 変更していない main.ts にもクロスファイルの TS2339 が push され、definition も新しい行を指す |
+| main.ts を編集 → `didChange` v2 | diagnostics が空になる |
+| client が切断（Pi 終了を想定） | プロセスは sandbox 内で動き続け（`listPtySessions` に残る）、`connectPty` で再接続すると server の状態もそのまま使える |
+| sandbox stop → start | 旧ハンドルは無効（request は失敗、`write` は `not connected`）。再 spawn + `initialize`（約 200 ms）+ client 側で保持していたドキュメントをディスクから開き直すと、definition も diagnostics も最新になる |
+
+### 2.4 復旧の必要条件（sandbox の再起動・Pi の resume）
+
+- 検知: `isConnected() === false`、または request のタイムアウト。`wait()` は使えない。
+- 再生成: sandbox を起動し（既存の `withRecovery` の範囲）→ 新しい PTY で再 spawn → `initialize` / `initialized` → client が保持している open ドキュメントを、version を振り直してディスクの内容で `didOpen` し直す。
+- Pi の resume（sandbox が動いている場合）: 2 通りある。
+  - `connectPty(id)` で再接続する。server の状態が残るので速いが、前の client がどのドキュメントを開いていたかを知らない。
+  - kill して再 spawn する。単純で状態がきれいになる。
+  
+  どちらにしても、Pi が異常終了するとプロセスが sandbox 内に残るので、`session_start` で ID プレフィックス（`pi-rp-`）を付けた PTY を `listPtySessions` から見つけて回収する必要がある。
+
+## 3. アーキテクチャ判断
+
+**A（既存 API だけで実現可能）。ただし PTY を使い、§2.2 の PTY 固有の問題を transport 層で吸収することが条件。**
+
+- session API（パイプ）は行バッファと `\n` の付加があるため、byte stream としては使えない。
+- PTY は、そのままでは stdio として安全ではない（B の懸念はその通り）。しかし `stty raw -echo`・sentinel・stderr のリダイレクト・64 KiB 分割・パイプで包む、の 5 点で、今回の検証範囲ではバイト単位で一致し、LSP の全フロー（push 通知、didChange、definition / references / hover）が動いた。
+- 残る制約: stderr をストリームとして読めない。stdin の EOF を送れない（未検証）。1 往復に約 180〜200 ms（Daytona までのネットワーク往復が支配的）。
+
+### 提案する構成
+
+```text
+Pi extension
+├── src/remote-process.ts   RemoteProcess（PTY 実装。LSP を知らない）
+│     spawn(command, { cwd, env }) → { write, stdout, kill, wait, isConnected }
+│     raw 化・sentinel・stderr のリダイレクト・64 KiB 分割・ID プレフィックス・回収
+├── src/lsp-client.ts       JSON-RPC の frame 処理・request・通知の購読（transport を知らない）
+└── src/lsp.ts              ドキュメントの version 管理・復旧・lsp ツール（definition / references / hover / diagnostics）
+```
+
+最初から `stderr: AsyncIterable` まで揃えた interface にはしない。PTY 実装では stderr を提供できないので、実装できるもの（`write` / `stdout` / `kill` / `wait` / `isConnected`）だけを持たせる。
+
+### Daytona upstream への feature request（C の観点。PTY の回避策を不要にする最小 API）
+
+session API に「raw（パイプ）モード」を足すだけで、PTY の回避策はすべて不要になる。
+
+| 最小 API | 現状 | 必要な変更 |
+|---|---|---|
+| spawn（パイプ、TTY なし） | `executeSessionCommand({ runAsync })` がある | 変更なし |
+| stdin への生の書き込み | `sendInput` が `\n` を付加する | `raw: true` で付加しない（バイナリなら WebSocket で受ける） |
+| stdout / stderr の生ストリーム | 行単位のラベル付け（シェルの `read -r line`） | `read` によるラベル付けをやめ、stdout と stderr をそれぞれ独立したバイトストリームとして WebSocket で流す |
+| stdin の close（EOF） | なし | `closeInput(sessionId, commandId)` |
+| kill / 終了コード | `deleteSession` / exitCode ファイル | 変更なし（1 command 単位の kill があるとよりよい） |
+
+### 次の一手
+
+1. `src/remote-process.ts`（PTY 実装）と `src/lsp-client.ts` を本実装として入れる。既存ツールには手を入れない。
+2. その上に definition / references / hover / diagnostics を返す `lsp` ツールを作る（編集は既存の edit ツールのままにし、LSP 側はツールの呼び出しごとに `didChange` で同期する）。
+3. Daytona に session API の raw モードを提案する。採用されたら `remote-process.ts` の実装だけを差し替える。
