@@ -127,6 +127,7 @@ Pass `--no-sync` to turn sync off explicitly. The repo is still cloned (over HTT
 | `find`              | Find files by glob inside the sandbox (gitignore-aware, supports path globs)       |
 | `grep`              | Search file contents inside the sandbox                                            |
 | `preview_url(port)` | Get a public preview URL for a port — the agent calls this after starting a server |
+| `lsp` (experimental) | TypeScript/JavaScript symbols and completions from a language server running inside the sandbox (Daytona native LSP API); see [docs/lsp-poc.md](docs/lsp-poc.md) |
 
 ## Development
 
@@ -182,6 +183,7 @@ DAYTONA_API_KEY=dtn_... pi -e ./index.ts --daytona
 npm run typecheck                 # type-check (tsc --noEmit)
 npm run smoke                     # offline: load the extension and check it registers (no API key/network)
 npm run test:no-sync              # offline: --no-sync lifecycle never writes to GitHub (stubbed SDK and gh)
+npm run test:lsp                  # offline: lsp tool lifecycle (lazy start, reuse, restart, edits, errors)
 npm run test:live                 # end-to-end against real Daytona (needs DAYTONA_API_KEY)
 ```
 
@@ -195,12 +197,13 @@ Releases are automated: merging this package's [release-please](https://github.c
 packages/pi-extension/
 ├── index.ts            # Extension entry point: flags, lifecycle, commands
 ├── src/                # Daytona-backed tool implementations
-│   ├── tools.ts        # Tool registration (sandbox-backed tools + preview_url)
+│   ├── tools.ts        # Tool registration (sandbox-backed tools + preview_url + lsp)
 │   ├── auth.ts         # Daytona API key resolution
 │   ├── sandbox.ts      # Sandbox resilience layer (auto-restart, exec)
 │   ├── ops.ts          # Daytona-backed bash/read/write/edit/ls operations
 │   ├── find-tool.ts    # In-sandbox find (ripgrep/find)
 │   ├── grep-tool.ts    # In-sandbox grep (ripgrep/grep)
+│   ├── lsp.ts          # In-sandbox language server (Daytona native LSP API)
 │   ├── github.ts       # Host gh control-plane (token + GitHub API)
 │   ├── sync.ts         # Sandbox-side git push (Daytona git API)
 │   └── util.ts         # Small shared helpers

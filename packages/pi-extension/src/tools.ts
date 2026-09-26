@@ -12,7 +12,7 @@
  * - `--daytona` off            -> the extension is dormant, Pi's local tool runs
  *
  * The operation-backed tools (bash/read/write/edit/ls) share one wrapper;
- * find/grep run a dedicated in-sandbox search; preview_url is a custom tool.
+ * find/grep run a dedicated in-sandbox search; preview_url and lsp are custom tools.
  */
 
 import type { Sandbox } from '@daytona/sdk'
@@ -29,6 +29,7 @@ import {
 import { Type } from 'typebox'
 import { type FindParams, runRemoteFind } from './find-tool.ts'
 import { type GrepParams, runRemoteGrep } from './grep-tool.ts'
+import { LspManager, formatCompletions, formatSymbols, languageForPath, resolvePath } from './lsp.ts'
 import { createBashOps, createEditOps, createLsOps, createReadOps, createWriteOps } from './ops.ts'
 import { withRecovery } from './sandbox.ts'
 
@@ -148,6 +149,61 @@ export function registerTools(pi: ExtensionAPI, getActive: () => ToolSandbox | n
         : `Preview URL for port ${port}: ${link.url}\n` +
           `This is a private sandbox, so the URL needs an auth header:\n` +
           `  curl -H "x-daytona-preview-token: ${link.token}" ${link.url}`
+      return { content: [{ type: 'text', text }], details: undefined }
+    },
+  })
+
+  const lsp = new LspManager()
+  const LSP_ACTIONS = ['status', 'workspace_symbols', 'document_symbols', 'completions'] as const
+  pi.registerTool({
+    name: 'lsp',
+    label: 'LSP',
+    description:
+      'Experimental code intelligence from a TypeScript/JavaScript language server running inside the Daytona ' +
+      'sandbox, against the same checkout and node_modules as bash/read/edit. Actions: ' +
+      '`workspace_symbols` (find declarations by name across the project; `query` required, optional `path` picks ' +
+      'which tsconfig project to search), `document_symbols` (outline of `path`), `completions` (at `path` + 1-based ' +
+      '`line`/`character`), `status`. Locations are 1-based `file:line:col`. Always reads files from disk, so results ' +
+      'reflect edits immediately.',
+    promptSnippet: 'Find symbol declarations / file outlines / completions via an in-sandbox language server',
+    parameters: Type.Object({
+      action: Type.Unsafe<(typeof LSP_ACTIONS)[number]>({ type: 'string', enum: [...LSP_ACTIONS] }),
+      query: Type.Optional(Type.String({ description: 'Symbol name to search (workspace_symbols)' })),
+      path: Type.Optional(Type.String({ description: 'File path, relative to the working directory or absolute' })),
+      line: Type.Optional(Type.Integer({ minimum: 1, description: '1-based line (completions)' })),
+      character: Type.Optional(Type.Integer({ minimum: 1, description: '1-based column (completions)' })),
+    }),
+    async execute(_id, params) {
+      const active = requireSandbox()
+      if (!active) throw new Error('No active Daytona sandbox — the lsp tool only runs inside the sandbox (launch Pi with --daytona).')
+      const { sandbox, cwd } = active
+      const path = params.path === undefined ? undefined : resolvePath(cwd, params.path)
+      const language = path ? languageForPath(path) : 'typescript'
+      if (!language) throw new Error(`No language server for ${path} (supported: TypeScript/JavaScript).`)
+      const need = <T>(value: T | undefined, name: string): T => {
+        if (value === undefined || value === '') throw new Error(`lsp ${params.action} requires \`${name}\`.`)
+        return value
+      }
+
+      let text: string
+      switch (params.action) {
+        case 'status':
+          text = `language server: ${language} @ ${cwd} · ${lsp.status(sandbox, language, cwd)} (starts lazily on first query)`
+          break
+        case 'workspace_symbols':
+          text = formatSymbols(await lsp.workspaceSymbols(sandbox, language, cwd, need(params.query, 'query'), path), cwd)
+          break
+        case 'document_symbols':
+          text = formatSymbols(await lsp.documentSymbols(sandbox, language, cwd, need(path, 'path')), cwd)
+          break
+        case 'completions': {
+          const position = { line: need(params.line, 'line') - 1, character: need(params.character, 'character') - 1 }
+          text = formatCompletions(await lsp.completions(sandbox, language, cwd, need(path, 'path'), position))
+          break
+        }
+        default:
+          throw new Error(`Unsupported LSP action: ${String(params.action)} (supported: ${LSP_ACTIONS.join(', ')})`)
+      }
       return { content: [{ type: 'text', text }], details: undefined }
     },
   })

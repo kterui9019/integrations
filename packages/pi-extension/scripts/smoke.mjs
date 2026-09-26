@@ -49,7 +49,7 @@ if (typeof factory !== 'function') {
 await factory(stubPi)
 
 const expectedFlags = ['daytona', 'repo', 'branch', 'snapshot', 'public', 'idle-stop', 'no-sync']
-const expectedTools = ['bash', 'read', 'write', 'edit', 'ls', 'find', 'grep', 'preview_url']
+const expectedTools = ['bash', 'read', 'write', 'edit', 'ls', 'find', 'grep', 'preview_url', 'lsp']
 const expectedEvents = ['user_bash', 'session_start', 'before_agent_start', 'agent_end', 'session_shutdown']
 const expectedCommands = ['sandbox', 'merge', 'pr', 'compare', 'github']
 
