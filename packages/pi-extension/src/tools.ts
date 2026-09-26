@@ -12,7 +12,7 @@
  * - `--daytona` off            -> the extension is dormant, Pi's local tool runs
  *
  * The operation-backed tools (bash/read/write/edit/ls) share one wrapper;
- * find/grep run a dedicated in-sandbox search; preview_url and lsp are custom tools.
+ * find/grep run a dedicated in-sandbox search; preview_url is a custom tool.
  */
 
 import type { Sandbox } from '@daytona/sdk'
@@ -29,7 +29,6 @@ import {
 import { Type } from 'typebox'
 import { type FindParams, runRemoteFind } from './find-tool.ts'
 import { type GrepParams, runRemoteGrep } from './grep-tool.ts'
-import { LspManager, createLspTool } from './lsp.ts'
 import { createBashOps, createEditOps, createLsOps, createReadOps, createWriteOps } from './ops.ts'
 import { withRecovery } from './sandbox.ts'
 
@@ -88,9 +87,8 @@ export function registerTools(pi: ExtensionAPI, getActive: () => ToolSandbox | n
 
   pi.registerTool(sandboxTool(localBash, (cwd, sb) => createBashTool(cwd, { operations: createBashOps(sb) })))
   pi.registerTool(sandboxTool(localRead, (cwd, sb) => createReadTool(cwd, { operations: createReadOps(sb) })))
-  const lsp = new LspManager()
-  pi.registerTool(sandboxTool(localWrite, (cwd, sb) => createWriteTool(cwd, { operations: createWriteOps(sb, lsp.fileWritten) })))
-  pi.registerTool(sandboxTool(localEdit, (cwd, sb) => createEditTool(cwd, { operations: createEditOps(sb, lsp.fileWritten) })))
+  pi.registerTool(sandboxTool(localWrite, (cwd, sb) => createWriteTool(cwd, { operations: createWriteOps(sb) })))
+  pi.registerTool(sandboxTool(localEdit, (cwd, sb) => createEditTool(cwd, { operations: createEditOps(sb) })))
   pi.registerTool(sandboxTool(localLs, (cwd, sb) => createLsTool(cwd, { operations: createLsOps(sb) })))
 
   // find and grep can't be redirected via operations: Pi runs fd/ripgrep
@@ -157,16 +155,6 @@ export function registerTools(pi: ExtensionAPI, getActive: () => ToolSandbox | n
       return { content: [{ type: 'text', text }], details: undefined }
     },
   })
-
-  // lsp has no local counterpart, so it only exists in --daytona sessions (flags
-  // aren't readable at load time). Language servers start on first use.
-  let lspRegistered = false
-  pi.on('session_start', () => {
-    if (lspRegistered || pi.getFlag('daytona') !== true) return
-    lspRegistered = true
-    pi.registerTool(createLspTool(lsp, requireSandbox))
-  })
-  pi.on('session_shutdown', () => lsp.dispose())
 
   // Route user `!` bash commands to the sandbox. When --daytona is set but no
   // sandbox is available, return an error result so the command is NOT run on the

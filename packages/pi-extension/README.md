@@ -136,26 +136,6 @@ Pass `--no-sync` to turn sync off explicitly. The repo is still cloned (over HTT
 | `find`              | Find files by glob inside the sandbox (gitignore-aware, supports path globs)       |
 | `grep`              | Search file contents inside the sandbox                                            |
 | `preview_url(port)` | Get a public preview URL for a port — the agent calls this after starting a server |
-| `lsp`               | Code intelligence from a language server inside the sandbox (see below)            |
-
-### Language servers (`lsp` tool)
-
-In `--daytona` sessions the agent gets an `lsp` tool backed by language servers that run **inside the sandbox**, against the same checkout and `node_modules`/virtualenv as `bash` — never against your local files.
-
-| Language              | Server                        | In the default snapshot                                                     |
-| --------------------- | ----------------------------- | --------------------------------------------------------------------------- |
-| TypeScript/JavaScript | `typescript-language-server`  | yes (uses the project's own `typescript` when installed)                    |
-| Python                | `pylsp`                       | yes, but without lint plugins — `pip install pyflakes` (or `python-lsp-server[all]`) for diagnostics |
-
-Actions: `definition`, `references`, `hover`, `rename` (edits the files; if a write fails, the files already written are restored), `diagnostics` (one file, or every file checked so far), `document_symbols`, `workspace_symbols`, `status`. Positions are a 1-based `line` plus a `symbol` name on that line, so the agent doesn't have to count columns.
-
-- A server starts on the first `lsp` call (a few seconds for a TypeScript project) and is reused; later calls take a few hundred milliseconds.
-- Changes made with `edit`/`write` are sent to the server immediately; files the server has open are re-checked before every call, so changes made via `bash` (`git checkout`, codegen, formatters) are picked up too. Files that were never opened are seen through the server's own file watching (about 2 s).
-- If the sandbox paused while idle, or the server died, the next call restarts it transparently. Servers are killed when Pi exits; ones left behind by a crashed Pi are cleaned up on the next start.
-- A connected server counts as sandbox activity (Daytona doesn't idle-pause a sandbox with an open PTY connection), so servers shut down after 5 minutes without an `lsp` call and the sandbox's normal idle pause applies again.
-- For whole-project checks, run the project's own checker (`tsc --noEmit`, `mypy`, …) with `bash`; `diagnostics` covers the files the server has seen.
-
-The server runs over Daytona's PTY API as a raw byte stream (`src/remote-process.ts`); see [docs/lsp-research.md](docs/lsp-research.md) for why and for the measurements.
 
 ## Development
 
@@ -212,7 +192,7 @@ npm run typecheck                 # type-check (tsc --noEmit)
 npm run smoke                     # offline: load the extension and check it registers (no API key/network)
 npm run test:no-sync              # offline: --no-sync lifecycle never writes to GitHub (stubbed SDK and gh)
 npm run test:secrets              # offline: --secrets is parsed and passed to sandbox creation (stubbed SDK)
-npm run test:lsp                  # offline: lsp tool + PTY transport against a fake sandbox/language server
+npm run test:lsp                  # offline: PTY transport and sandbox cwd routing against a fake sandbox
 npm run test:live                 # end-to-end against real Daytona (needs DAYTONA_API_KEY)
 ```
 
@@ -226,14 +206,12 @@ Releases are automated: merging this package's [release-please](https://github.c
 packages/pi-extension/
 ├── index.ts            # Extension entry point: flags, lifecycle, commands
 ├── src/                # Daytona-backed tool implementations
-│   ├── tools.ts        # Tool registration (sandbox-backed tools + preview_url + lsp)
+│   ├── tools.ts        # Tool registration (sandbox-backed tools + preview_url)
 │   ├── auth.ts         # Daytona API key resolution
 │   ├── sandbox.ts      # Sandbox resilience layer (auto-restart, exec)
 │   ├── ops.ts          # Daytona-backed bash/read/write/edit/ls operations
 │   ├── find-tool.ts    # In-sandbox find (ripgrep/find)
 │   ├── grep-tool.ts    # In-sandbox grep (ripgrep/grep)
-│   ├── lsp.ts          # lsp tool: language servers, document sync, recovery
-│   ├── lsp-client.ts   # Minimal LSP JSON-RPC client (transport-agnostic)
 │   ├── remote-process.ts # Long-lived sandbox process as a byte stream (PTY API)
 │   ├── github.ts       # Host gh control-plane (token + GitHub API)
 │   ├── sync.ts         # Sandbox-side git push (Daytona git API)

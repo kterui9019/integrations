@@ -39,8 +39,7 @@
     "check": "npm run typecheck && npm run smoke && npm run test:no-sync && npm run test:secrets && npm run test:lsp",
     "test:bash-bg": "node scripts/bash-bg.mjs",
     "test:recovery": "node scripts/recovery.mjs",
-    "test:lsp-live": "node scripts/lsp-live.mjs",
-    "test:live": "npm run test:bash-bg && npm run test:recovery && npm run test:lsp-live"
+    "test:live": "npm run test:bash-bg && npm run test:recovery"
   },
   "dependencies": {
     "@daytona/sdk": "^0.192.0"
