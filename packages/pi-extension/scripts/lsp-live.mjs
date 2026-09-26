@@ -40,7 +40,9 @@ async function pi(active, { daytona = true } = {}) {
   }
   await emit('session_start')
   const call = async (name, params) => {
-    const res = await tools.get(name).execute('id', params, undefined, () => {}, {})
+    // What Pi passes: its own (host) cwd plus the session manager.
+    const ctx = { cwd: process.cwd(), sessionManager: { getSessionId: () => 'session-id', getSessionFile: () => undefined } }
+    const res = await tools.get(name).execute('id', params, undefined, () => {}, ctx)
     return res.content.map((c) => c.text).join('\n')
   }
   return { tools, emit, call, lsp: (params) => call('lsp', params) }
