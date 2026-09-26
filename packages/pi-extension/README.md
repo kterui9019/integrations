@@ -181,6 +181,7 @@ DAYTONA_API_KEY=dtn_... pi -e ./index.ts --daytona
 ```bash
 npm run typecheck                 # type-check (tsc --noEmit)
 npm run smoke                     # offline: load the extension and check it registers (no API key/network)
+npm run test:no-sync              # offline: --no-sync lifecycle never writes to GitHub (stubbed SDK and gh)
 npm run test:live                 # end-to-end against real Daytona (needs DAYTONA_API_KEY)
 ```
 
