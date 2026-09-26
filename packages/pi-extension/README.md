@@ -76,6 +76,7 @@ Or run outside a git repo to get a blank workspace.
 | `--branch <name>`   | Branch to clone (defaults to your current branch)                   |
 | `--snapshot <name>` | Choose a Daytona snapshot / base image                              |
 | `--public`          | Create a public sandbox so preview URLs need no token               |
+| `--no-sync`         | Disable GitHub branch sync: no `pi/<id>` branch is created, no push |
 
 #### Slash commands
 
@@ -111,6 +112,8 @@ All network git operations (clone/push) run **inside the sandbox** through Dayto
 
 > [!NOTE]
 > When you're not in a github.com repo (or `gh` isn't authenticated), push is disabled. The sandbox still gets a local git repo so the agent can commit, but nothing is pushed.
+
+Pass `--no-sync` to turn sync off explicitly. The repo is still cloned (over HTTPS with your `gh` token when available, so private repos work) at `--branch` or your current branch, but no session branch is created on GitHub and nothing is pushed. On resume, `--no-sync` suspends pushing for that run; resuming without it restores sync if the session had it.
 
 ### Tools
 
