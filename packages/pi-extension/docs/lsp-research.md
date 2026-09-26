@@ -176,6 +176,7 @@ session API に「raw（パイプ）モード」を足すだけで、PTY の回�
 | 最初の spawn の前に、`pi-lsp-` で始まる PTY を kill する。`session_shutdown` でも kill する | Pi が異常終了すると、サーバーは sandbox 内で動き続ける（§2.3）。sandbox は session ごとなので、残っているものは前回の Pi のもの |
 | バイナリの有無を `command -v` で先に確認し、なければインストール方法を返す。初期化に失敗したら stderr ログの末尾を添える | `exec` の失敗は stderr のリダイレクト先に消え、initialize のタイムアウトとしか見えなくなる |
 | `lsp` の呼び出しが 5 分なかったら、サーバーを停止する | PTY の WebSocket がつながっている間、sandbox は idle で一時停止しない。autoStop 1 分での実測: PTY 接続あり → 240 秒後も `started`、PTY なし（対照）→ 約 90 秒で `stopped`、PTY プロセスは残して WebSocket だけ切断 → 約 90 秒で `stopped`。したがって、止まらなくなる原因は接続であり、異常終了した Pi が残したサーバーは一時停止を妨げない |
+| transport は SDK の `PtyHandle.wait()` を使わず、`isConnected()` を監視する（unref したタイマー。切断・kill で止める）。kill では自分側の WebSocket も閉じる | `wait()` は exit code が届くまで 100 ms ごとにタイマーを張り直す。sandbox の停止で接続だけが切れると exit code は来ないので、Node のプロセスが終了しなくなり、stdout も閉じなかった |
 
 ### 残り
 

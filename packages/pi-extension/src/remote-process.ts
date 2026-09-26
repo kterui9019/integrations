@@ -20,12 +20,12 @@ import type { PtyHandle, Sandbox } from '@daytona/sdk'
 
 export interface RemoteProcess {
   readonly id: string
-  /** Bytes the process writes to stdout. Ends when the process exits or the connection drops. */
+  /** Bytes the process writes to stdout. Ends when the process exits, is killed, or the connection drops. */
   readonly stdout: AsyncIterable<Uint8Array>
-  /** Writes are queued: concurrent calls never interleave. */
+  /** Writes are queued: concurrent calls never interleave. Rejects once the process is gone. */
   write(data: Uint8Array | string): Promise<void>
+  /** Kill the process and release the connection (no timers or sockets are left behind). */
   kill(): Promise<void>
-  /** False once the process exited or the sandbox went away (sandbox stop doesn't resolve `exited`). */
   isConnected(): boolean
 }
 
@@ -77,6 +77,7 @@ export async function spawnRemoteProcess(sandbox: Sandbox, command: string, opti
     await withTimeout(ready.promise, readyTimeoutMs, `remote process did not start within ${readyTimeoutMs}ms: ${command}`)
   } catch (err) {
     await pty.kill().catch(() => undefined)
+    await pty.disconnect().catch(() => undefined)
     throw err
   }
   return wrap(pty, stdout, id)
@@ -88,22 +89,48 @@ export async function killRemoteProcesses(sandbox: Sandbox, prefix: string): Pro
   await Promise.allSettled(sessions.filter((s) => s.id.startsWith(prefix)).map((s) => sandbox.process.killPtySession(s.id)))
 }
 
+// The SDK's PtyHandle.wait() polls until an exit code arrives, which never happens when the
+// connection just drops (sandbox stop), so it would keep a timer alive forever. Watch the
+// connection instead.
+const MONITOR_INTERVAL_MS = 250
+
 function wrap(pty: PtyHandle, stdout: ByteQueue, id: string): RemoteProcess {
-  void pty.wait().finally(() => stdout.end())
+  let closed = false
+  const close = () => {
+    if (closed) return
+    closed = true
+    clearInterval(monitor)
+    stdout.end()
+  }
+  const monitor = setInterval(() => {
+    if (!pty.isConnected()) close()
+  }, MONITOR_INTERVAL_MS)
+  monitor.unref()
   let queue: Promise<void> = Promise.resolve()
   return {
     id,
     stdout,
     write(data) {
+      if (closed) return Promise.reject(new Error(`remote process ${id} is not connected`))
       const bytes = typeof data === 'string' ? Buffer.from(data, 'utf8') : data
       const sent = queue.then(async () => {
-        for (let i = 0; i < bytes.length; i += WRITE_CHUNK) await pty.sendInput(bytes.subarray(i, i + WRITE_CHUNK))
+        for (let i = 0; i < bytes.length; i += WRITE_CHUNK) {
+          if (closed) throw new Error(`remote process ${id} is not connected`)
+          await pty.sendInput(bytes.subarray(i, i + WRITE_CHUNK))
+        }
       })
       queue = sent.catch(() => undefined)
       return sent
     },
-    kill: () => pty.kill(),
-    isConnected: () => pty.isConnected(),
+    async kill() {
+      try {
+        await pty.kill()
+      } finally {
+        close()
+        await pty.disconnect().catch(() => undefined)
+      }
+    },
+    isConnected: () => !closed && pty.isConnected(),
   }
 }
 

@@ -13,6 +13,8 @@
  */
 
 import assert from 'node:assert/strict'
+import { spawn } from 'node:child_process'
+import { once } from 'node:events'
 import { createRequire } from 'node:module'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -141,7 +143,40 @@ try {
   assert.match(await a.lsp({ action: 'diagnostics', path: 'app.py' }), /app\.py:5:7 error.*undefined name 'undefined_name'/)
   console.log('✓ Python via pylsp: definition / hover / diagnostics')
 
-  await sandbox.stop()
+  // A separate Node process spawns a remote process, then the sandbox stops under it. The
+  // connection drops without an exit code; nothing may keep that process alive afterwards.
+  const child = spawn(
+    process.execPath,
+    [
+      '--input-type=module',
+      '-e',
+      `
+      import { createRequire } from 'node:module'
+      import { fileURLToPath } from 'node:url'
+      const { createJiti } = createRequire(fileURLToPath(import.meta.resolve('@earendil-works/pi-coding-agent')))('jiti')
+      const { spawnRemoteProcess } = await createJiti(import.meta.url).import(process.env.REMOTE_PROCESS_MODULE)
+      const { Daytona } = await import('@daytona/sdk')
+      const sandbox = await new Daytona().get(process.env.SANDBOX_ID)
+      const proc = await spawnRemoteProcess(sandbox, 'cat', { id: 'pi-exit-probe' })
+      await sandbox.stop()
+      for await (const _ of proc.stdout);
+      console.log('stdout ended, connected=' + proc.isConnected())
+      `,
+    ],
+    {
+      cwd: root,
+      env: { ...process.env, SANDBOX_ID: sandbox.id, REMOTE_PROCESS_MODULE: process.env.REMOTE_PROCESS_MODULE ?? path.join(root, 'src/remote-process.ts') },
+      stdio: ['ignore', 'pipe', 'inherit'],
+    },
+  )
+  let childOut = ''
+  child.stdout.on('data', (d) => (childOut += d))
+  const childExit = await Promise.race([once(child, 'exit').then(([code]) => code), new Promise((r) => setTimeout(() => r('still running'), 60_000))])
+  if (childExit === 'still running') child.kill()
+  assert.equal(childExit, 0)
+  assert.equal(childOut.trim(), 'stdout ended, connected=false')
+  console.log('✓ a dropped connection (sandbox stop) ends stdout and leaves nothing keeping Node alive')
+
   assert.match(await a.lsp({ action: 'definition', path: 'src/main.ts', line: 3, symbol: 'UserRepository' }), /src\/user\.ts:2:14/)
   console.log('✓ after the sandbox stopped (idle pause): restarted and respawned transparently')
 

@@ -30,7 +30,7 @@ const uriOf = (p) => `file://${p}`
 const pathOf = (u) => decodeURIComponent(new URL(u).pathname)
 
 /** Just enough of a language server: open documents override files on `disk`. */
-function fakeServer(send, disk) {
+function fakeServer(send, disk, onRequest) {
   const docs = new Map()
   const project = () => new Map([...[...disk].filter(([p]) => p.endsWith('.ts')).map(([p, t]) => [uriOf(p), t]), ...docs])
   const wordAt = (uri, { line, character }) => {
@@ -80,6 +80,7 @@ function fakeServer(send, disk) {
       if (buf.length < end + 4 + len) return
       const msg = JSON.parse(buf.subarray(end + 4, end + 4 + len).toString())
       buf = buf.subarray(end + 4 + len)
+      onRequest(msg.method)
       const result = handlers[msg.method]?.(msg.params)
       if (msg.id !== undefined) send({ jsonrpc: '2.0', id: msg.id, result: result ?? null })
     }
@@ -96,8 +97,13 @@ class FakeSandbox {
     this.installed = true
     this.chunks = []
     this.execCwds = []
+    this.requests = []
+    this.uploadHook = undefined
     this.fs = {
-      uploadFile: async (buf, p) => this.files.set(p, Buffer.from(buf).toString()),
+      uploadFile: async (buf, p) => {
+        this.uploadHook?.(p)
+        this.files.set(p, Buffer.from(buf).toString())
+      },
       downloadFile: async (p) => {
         if (!this.files.has(p)) throw new Error('not found')
         return Buffer.from(this.files.get(p))
@@ -158,7 +164,7 @@ class FakeSandbox {
           feed = fakeServer((msg) => {
             const body = Buffer.from(JSON.stringify(msg))
             emit(Buffer.concat([Buffer.from(`Content-Length: ${body.length}\r\n\r\n`), body]))
-          }, this.files)
+          }, this.files, (method) => this.requests.push(method))
           return
         }
         this.chunks.push(Buffer.from(data))
@@ -321,6 +327,21 @@ const files = () => ({
   assert.equal(sb.spawned, 2)
   await manager.dispose()
   console.log('✓ servers shut down after the idle period and respawn on the next call')
+}
+
+// Transport: a dropped connection ends the stream and rejects writes
+{
+  const sb = new FakeSandbox()
+  const proc = await spawnRemoteProcess(sb, 'cat', { id: 'pi-drop' })
+  sb.ptys.get('pi-drop').disconnect()
+  const drained = (async () => {
+    for await (const _ of proc.stdout);
+    return 'ended'
+  })()
+  assert.equal(await Promise.race([drained, new Promise((r) => setTimeout(() => r('still open'), 2000))]), 'ended')
+  assert.equal(proc.isConnected(), false)
+  await assert.rejects(proc.write('x'), /not connected/)
+  console.log('✓ transport: a dropped connection ends stdout and rejects further writes')
 }
 
 // Transport: concurrent writes larger than one chunk stay contiguous
