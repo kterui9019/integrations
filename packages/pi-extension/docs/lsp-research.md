@@ -83,10 +83,10 @@ Pi（ローカル）から、Daytona sandbox 内の checkout・依存関係に�
 | プロセス ID | session ID + command ID | PTY session ID（`listPtySessions` で列挙できる） |
 | kill | `deleteSession`（プロセスグループごと SIGTERM→SIGKILL） | `kill()`（プロセスツリーに SIGKILL、exit 137） |
 | 終了コード | ○ | ○ `wait()`（例: `exit 7` → 7） |
-| stdin の EOF | 送れない（daemon が stdin の保持プロセスを別に立てている） | 送れない（raw モードでは ^D もただのバイト）[INFERENCE: 未検証] |
+| stdin の EOF | API がない（daemon が stdin の保持プロセスを別に立てている） | API がない。raw モードでは ^D もただのバイトとして届き、プロセスは終了しない。`cat \| cmd` で包み、先頭の `cat` を別コマンドで kill すれば EOF を届けられる（`wc -c` が `5` を出して exit 0） |
 | sandbox 再起動後 | session は消える（`session not found`） | PTY は消える（`listPtySessions` が空）。ハンドルはすぐ `isConnected() === false` になる。一方 `wait()` は 5 秒待っても解決しなかった |
 
-補足: session API の streaming で、2 回目の書き込み（`"b"`）の出力が 2.5 秒以内に届かなかったことが 1 回あった（再現は未確認）。
+補足: session API の streaming で、2 回目の書き込み（`"b"`）の出力が 2.5 秒以内に届かなかったことが 1 回あった。3 session × 10 回の書き込みでは 30/30 届き（log ファイルにも 30 行）、再現しなかった。一時的な遅延だったと見ている。
 
 **session API は byte stream として使えない。** 出力が行単位でバッファされるため、改行で終わらない LSP のメッセージ本文は、次の出力が来るまで届かない（応答待ちでデッドロックする）。さらに入力には `\n` が付加される。
 
@@ -99,7 +99,7 @@ Pi（ローカル）から、Daytona sandbox 内の checkout・依存関係に�
 | raw 化する前に書いた入力は、エコーされたり行規律で加工されたりする | sentinel を受信するまで書かない | — |
 | stderr が混ざる | `2>ファイル` へリダイレクト | stdout は汚れない。stderr はストリームとしては読めない |
 | 子プロセスから見て stdin/stdout が TTY になる（色付けやページャなど、TTY かどうかで挙動を変える CLI がある） | `cat \| cmd \| cat` で包む | 子からはパイプに見え、往復遅延（約 170 ms）もバッファリングも変わらない |
-| 大きな書き込みでコネクションが落ちる | 64 KiB 単位に分割して送る | 4 MiB を約 1.8 秒で送れる |
+| 大きな書き込みでコネクションが落ちる | 64 KiB 単位に分割して送る。分割した書き込みの途中に別の書き込みが割り込むと frame が壊れる（200 KB を 2 つ並行に書くと chunk が交互に届いた）ので、write 単位でキューに積んで直列化する | 4 MiB を約 1.8 秒で送れる。並行に書いた 200 KB × 2 も、呼んだ順にそのまま届く |
 | 切断の検知 | `wait()` ではなく `isConnected()` と request のタイムアウトで判定する | sandbox の stop 直後に `isConnected() === false` |
 
 ### 2.3 LSP での検証（`remote-process-lsp.mjs`、すべて成功）
@@ -132,8 +132,8 @@ Pi（ローカル）から、Daytona sandbox 内の checkout・依存関係に�
 **A（既存 API だけで実現可能）。ただし PTY を使い、§2.2 の PTY 固有の問題を transport 層で吸収することが条件。**
 
 - session API（パイプ）は行バッファと `\n` の付加があるため、byte stream としては使えない。
-- PTY は、そのままでは stdio として安全ではない（B の懸念はその通り）。しかし `stty raw -echo`・sentinel・stderr のリダイレクト・64 KiB 分割・パイプで包む、の 5 点で、今回の検証範囲ではバイト単位で一致し、LSP の全フロー（push 通知、didChange、definition / references / hover）が動いた。
-- 残る制約: stderr をストリームとして読めない。stdin の EOF を送れない（未検証）。1 往復に約 180〜200 ms（Daytona までのネットワーク往復が支配的）。
+- PTY は、そのままでは stdio として安全ではない（B の懸念はその通り）。しかし `stty raw -echo`・sentinel・stderr のリダイレクト・64 KiB 分割と write の直列化・パイプで包む、の 5 点で、今回の検証範囲ではバイト単位で一致し、LSP の全フロー（push 通知、didChange、definition / references / hover）が動いた。
+- 残る制約: stderr をストリームとして読めない。stdin の EOF は、パイプで包んで feeder を kill する回避策でしか送れない。1 往復に約 180〜200 ms（Daytona までのネットワーク往復が支配的）。
 
 ### 提案する構成
 
@@ -141,7 +141,7 @@ Pi（ローカル）から、Daytona sandbox 内の checkout・依存関係に�
 Pi extension
 ├── src/remote-process.ts   RemoteProcess（PTY 実装。LSP を知らない）
 │     spawn(command, { cwd, env }) → { write, stdout, kill, wait, isConnected }
-│     raw 化・sentinel・stderr のリダイレクト・64 KiB 分割・ID プレフィックス・回収
+│     raw 化・sentinel・stderr のリダイレクト・64 KiB 分割と write の直列化・ID プレフィックス・回収
 ├── src/lsp-client.ts       JSON-RPC の frame 処理・request・通知の購読（transport を知らない）
 └── src/lsp.ts              ドキュメントの version 管理・復旧・lsp ツール（definition / references / hover / diagnostics）
 ```

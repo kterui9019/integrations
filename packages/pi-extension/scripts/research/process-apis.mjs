@@ -113,6 +113,25 @@ try {
     assert.equal(await firstLine(await spawnPtyProcess(sandbox, `sh -c 'cat | sh /tmp/isatty.sh | cat'`)), 'stdin=pipe stdout=pipe')
     console.log('✓ pty: the child sees a TTY; wrapping it as `cat | cmd | cat` gives it pipes')
 
+    const ctrlD = await spawnPtyProcess(sandbox, 'cat')
+    const ctrlDOut = ctrlD.stdout[Symbol.asyncIterator]()
+    await ctrlD.write('x\x04')
+    let echoedBack = ''
+    while (echoedBack.length < 2) echoedBack += Buffer.from((await ctrlDOut.next()).value).toString('latin1')
+    assert.equal(echoedBack, 'x\x04')
+    assert.equal(await Promise.race([ctrlD.wait().then(() => 'exited'), sleep(2000).then(() => 'running')]), 'running')
+    await ctrlD.kill()
+    const mark = `eofmark${Date.now()}`
+    const counted = await spawnPtyProcess(sandbox, `sh -c ': ${mark}; cat | wc -c'`)
+    await counted.write('hello')
+    await sleep(500)
+    await sandbox.process.executeCommand(`pkill -x cat -P $(pgrep -f '${mark}' | head -n 1)`)
+    let count = ''
+    for await (const chunk of counted.stdout) count += Buffer.from(chunk).toString()
+    assert.equal(count.trim(), '5')
+    assert.equal(await counted.wait(), 0)
+    console.log('✓ pty: no stdin EOF in raw mode (^D is a byte); killing the feeder `cat` of `cat | cmd` delivers EOF')
+
     const raw = await sandbox.process.createPty({ id: 'probe-big', onData: () => {} })
     await raw.waitForConnection()
     await raw.sendInput(`stty raw -echo; exec cat > /dev/null\n`)

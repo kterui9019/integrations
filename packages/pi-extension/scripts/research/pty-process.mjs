@@ -98,12 +98,18 @@ const WRITE_CHUNK = 64 * 1024
 
 function wrap(pty, stdout, id) {
   const exited = pty.wait().finally(() => stdout.end())
+  // Each write is chunked, so whole writes are queued to keep one write's chunks contiguous.
+  let queue = Promise.resolve()
   return {
     id,
     stdout,
-    async write(data) {
+    write(data) {
       const bytes = typeof data === 'string' ? Buffer.from(data, 'utf8') : data
-      for (let i = 0; i < bytes.length; i += WRITE_CHUNK) await pty.sendInput(bytes.subarray(i, i + WRITE_CHUNK))
+      const sent = queue.then(async () => {
+        for (let i = 0; i < bytes.length; i += WRITE_CHUNK) await pty.sendInput(bytes.subarray(i, i + WRITE_CHUNK))
+      })
+      queue = sent.catch(() => undefined)
+      return sent
     },
     kill: () => pty.kill(),
     wait: async () => (await exited).exitCode,
