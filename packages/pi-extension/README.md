@@ -167,7 +167,7 @@ await new Daytona().snapshot.create({
 pi --daytona --snapshot pi-lens
 ```
 
-For TypeScript diagnostics the project needs its own `typescript` in `node_modules` (`npm install` in the sandbox); without it the language server reported no errors.
+For TypeScript diagnostics, `typescript` must be installed either in the project (`node_modules`) or globally in the image; with neither, no errors were reported.
 
 The server runs over Daytona's PTY API as a raw byte stream (`src/remote-process.ts`); see [docs/lsp-research.md](docs/lsp-research.md) for why and for the measurements.
 
