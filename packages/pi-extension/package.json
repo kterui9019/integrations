@@ -34,13 +34,14 @@
     "typecheck": "tsc --noEmit",
     "smoke": "node scripts/smoke.mjs",
     "test:no-sync": "node scripts/no-sync.mjs",
-    "check": "npm run typecheck && npm run smoke && npm run test:no-sync",
+    "test:secrets": "node scripts/secrets.mjs",
+    "check": "npm run typecheck && npm run smoke && npm run test:no-sync && npm run test:secrets",
     "test:bash-bg": "node scripts/bash-bg.mjs",
     "test:recovery": "node scripts/recovery.mjs",
     "test:live": "npm run test:bash-bg && npm run test:recovery"
   },
   "dependencies": {
-    "@daytona/sdk": "^0.184.0"
+    "@daytona/sdk": "^0.192.0"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "^0.79.0",

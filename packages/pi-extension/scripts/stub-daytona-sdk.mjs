@@ -4,7 +4,7 @@
  */
 
 /**
- * In-memory stand-in for `@daytona/sdk`, aliased in by scripts/no-sync.mjs.
+ * In-memory stand-in for `@daytona/sdk`, aliased in by the offline tests (scripts/no-sync.mjs, scripts/secrets.mjs).
  * Every sandbox call is appended to `globalThis.__daytonaCalls`.
  */
 
@@ -44,8 +44,8 @@ class FakeSandbox {
 }
 
 export class Daytona {
-  async create() {
-    log('create')
+  async create(params) {
+    log('create', params)
     return new FakeSandbox('sb-new')
   }
   async get(id) {

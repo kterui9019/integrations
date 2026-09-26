@@ -77,6 +77,15 @@ Or run outside a git repo to get a blank workspace.
 | `--snapshot <name>` | Choose a Daytona snapshot / base image                              |
 | `--public`          | Create a public sandbox so preview URLs need no token               |
 | `--no-sync`         | Disable GitHub branch sync: no `pi/<id>` branch is created, no push |
+| `--secrets <map>`   | Mount [Daytona Secrets](https://www.daytona.io/docs/en/secrets/) as env vars (see below) |
+
+`--secrets` takes comma-separated `ENV_VAR=secret-name` pairs, where each `secret-name` is an existing Secret in your Daytona organization:
+
+```bash
+pi --daytona --secrets ANTHROPIC_API_KEY=anthropic,GITHUB_TOKEN=gh-bot
+```
+
+Inside the sandbox the env var holds an opaque placeholder, not the real value; Daytona substitutes the value on outbound HTTPS requests to the Secret's allowed hosts. Secrets are attached when the sandbox is created, so passing `--secrets` when resuming a session does not change its existing sandbox.
 
 #### Slash commands
 
@@ -182,6 +191,7 @@ DAYTONA_API_KEY=dtn_... pi -e ./index.ts --daytona
 npm run typecheck                 # type-check (tsc --noEmit)
 npm run smoke                     # offline: load the extension and check it registers (no API key/network)
 npm run test:no-sync              # offline: --no-sync lifecycle never writes to GitHub (stubbed SDK and gh)
+npm run test:secrets              # offline: --secrets is parsed and passed to sandbox creation (stubbed SDK)
 npm run test:live                 # end-to-end against real Daytona (needs DAYTONA_API_KEY)
 ```
 
